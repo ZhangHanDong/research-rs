@@ -23,6 +23,31 @@ path_segments = ["{owner}", "{repo}", "issues", "{num}"]
 executor = "postagent"
 template = 'postagent send --anonymous "https://api.github.com/repos/{owner}/{repo}/issues/{num}"'
 
+# Incremental source reading — /blob/<ref>/<path> → raw.githubusercontent.com
+# Raw host doesn't count against GitHub's anonymous rate limit.
+[[rule]]
+kind = "github-file"
+host = "github.com"
+path_segments = ["{owner}", "{repo}", "blob", "{ref}", "{...path}"]
+executor = "postagent"
+template = 'postagent send --anonymous "https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"'
+
+# Directory listing — /tree/<ref>/<path> → Contents API (base64 or JSON listing).
+[[rule]]
+kind = "github-tree"
+host = "github.com"
+path_segments = ["{owner}", "{repo}", "tree", "{ref}", "{...path}"]
+executor = "postagent"
+template = 'postagent send --anonymous "https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={ref}"'
+
+# Pass-through for raw.githubusercontent.com URLs — return the raw bytes.
+[[rule]]
+kind = "github-raw"
+host = "raw.githubusercontent.com"
+path_segments = ["{owner}", "{repo}", "{ref}", "{...path}"]
+executor = "postagent"
+template = 'postagent send --anonymous "{url}"'
+
 [[rule]]
 kind = "github-repo-readme"
 host = "github.com"

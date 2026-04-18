@@ -90,6 +90,55 @@ fn route_tech_arxiv_abs() {
 }
 
 #[test]
+fn route_tech_github_file_blob_to_raw() {
+    let (v, code, _) = run(&[
+        "route",
+        "https://github.com/tokio-rs/tokio/blob/master/tokio/src/runtime/mod.rs",
+        "--json",
+    ]);
+    assert_eq!(code, 0);
+    assert_eq!(v["data"]["executor"], "postagent");
+    assert_eq!(v["data"]["kind"], "github-file");
+    let cmd = v["data"]["command_template"].as_str().unwrap();
+    assert!(
+        cmd.contains("raw.githubusercontent.com/tokio-rs/tokio/master/tokio/src/runtime/mod.rs"),
+        "got {cmd}"
+    );
+}
+
+#[test]
+fn route_tech_github_tree_to_contents_api() {
+    let (v, code, _) = run(&[
+        "route",
+        "https://github.com/tokio-rs/tokio/tree/master/tokio/src/runtime",
+        "--json",
+    ]);
+    assert_eq!(code, 0);
+    assert_eq!(v["data"]["kind"], "github-tree");
+    let cmd = v["data"]["command_template"].as_str().unwrap();
+    assert!(
+        cmd.contains("api.github.com/repos/tokio-rs/tokio/contents/tokio/src/runtime?ref=master"),
+        "got {cmd}"
+    );
+}
+
+#[test]
+fn route_tech_github_raw_passthrough() {
+    let (v, code, _) = run(&[
+        "route",
+        "https://raw.githubusercontent.com/rust-lang/rust/master/README.md",
+        "--json",
+    ]);
+    assert_eq!(code, 0);
+    assert_eq!(v["data"]["kind"], "github-raw");
+    let cmd = v["data"]["command_template"].as_str().unwrap();
+    assert!(
+        cmd.contains("raw.githubusercontent.com/rust-lang/rust/master/README.md"),
+        "got {cmd}"
+    );
+}
+
+#[test]
 fn route_fallback_unknown_domain() {
     let (v, code, _) = run(&[
         "route",

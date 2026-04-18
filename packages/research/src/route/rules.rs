@@ -97,8 +97,11 @@ pub enum PathMatcher {
 #[derive(Debug, Clone)]
 pub enum SegmentPattern {
     Literal(String),
-    /// Placeholder like `{owner}` — captures the segment by this name.
+    /// Placeholder like `{owner}` — captures one segment by this name.
     Capture(String),
+    /// Variable-length placeholder like `{...path}` — captures all remaining
+    /// segments joined by `/`. Only valid as the last segment in a pattern.
+    VarCapture(String),
 }
 
 // ── Classify result ─────────────────────────────────────────────────────────
@@ -292,12 +295,33 @@ fn compile_rule(
             .iter()
             .map(|s| {
                 if s.starts_with('{') && s.ends_with('}') {
-                    SegmentPattern::Capture(s[1..s.len() - 1].to_string())
+                    let inner = &s[1..s.len() - 1];
+                    if let Some(name) = inner.strip_prefix("...") {
+                        SegmentPattern::VarCapture(name.to_string())
+                    } else {
+                        SegmentPattern::Capture(inner.to_string())
+                    }
                 } else {
                     SegmentPattern::Literal(s.clone())
                 }
             })
             .collect();
+
+        // VarCapture must only appear as the last segment.
+        if let Some(bad_idx) = segs.iter().enumerate().position(|(i, p)| {
+            matches!(p, SegmentPattern::VarCapture(_)) && i != segs.len() - 1
+        }) {
+            return Err(PresetError {
+                sub_code: PresetSubCode::SchemaInvalid,
+                message: format!(
+                    "rule[{idx}] (kind={}) variable-length {{...name}} segment at position {bad_idx} \
+                    must be the last path segment",
+                    r.kind
+                ),
+                path: src.map(String::from),
+            });
+        }
+
         PathMatcher::Segments(segs)
     };
 
@@ -360,8 +384,11 @@ fn bound_placeholders(
     let mut set = std::collections::HashSet::new();
     if let PathMatcher::Segments(segs) = path {
         for s in segs {
-            if let SegmentPattern::Capture(name) = s {
-                set.insert(name.clone());
+            match s {
+                SegmentPattern::Capture(name) | SegmentPattern::VarCapture(name) => {
+                    set.insert(name.clone());
+                }
+                SegmentPattern::Literal(_) => {}
             }
         }
     }
@@ -513,18 +540,46 @@ fn match_rule(rule: &CompiledRule, parsed: &ParsedUrl) -> Option<HashMap<String,
                 .split('/')
                 .filter(|s| !s.is_empty())
                 .collect();
-            if segs.len() != patterns.len() {
-                return None;
-            }
-            for (pat, seg) in patterns.iter().zip(segs.iter()) {
-                match pat {
-                    SegmentPattern::Literal(lit) => {
-                        if lit != seg {
-                            return None;
+
+            let has_var_tail = matches!(patterns.last(), Some(SegmentPattern::VarCapture(_)));
+
+            if has_var_tail {
+                // Need at least (patterns.len() - 1) fixed segments.
+                if segs.len() < patterns.len() - 1 {
+                    return None;
+                }
+                let fixed_count = patterns.len() - 1;
+                for (pat, seg) in patterns[..fixed_count].iter().zip(segs[..fixed_count].iter()) {
+                    match pat {
+                        SegmentPattern::Literal(lit) => {
+                            if lit != seg {
+                                return None;
+                            }
                         }
+                        SegmentPattern::Capture(name) => {
+                            caps.insert(name.clone(), (*seg).to_string());
+                        }
+                        SegmentPattern::VarCapture(_) => unreachable!(),
                     }
-                    SegmentPattern::Capture(name) => {
-                        caps.insert(name.clone(), (*seg).to_string());
+                }
+                if let Some(SegmentPattern::VarCapture(name)) = patterns.last() {
+                    caps.insert(name.clone(), segs[fixed_count..].join("/"));
+                }
+            } else {
+                if segs.len() != patterns.len() {
+                    return None;
+                }
+                for (pat, seg) in patterns.iter().zip(segs.iter()) {
+                    match pat {
+                        SegmentPattern::Literal(lit) => {
+                            if lit != seg {
+                                return None;
+                            }
+                        }
+                        SegmentPattern::Capture(name) => {
+                            caps.insert(name.clone(), (*seg).to_string());
+                        }
+                        SegmentPattern::VarCapture(_) => unreachable!(),
                     }
                 }
             }
@@ -711,6 +766,97 @@ template = "fb"
     fn file_not_found() {
         let err = load_preset(None, Some(Path::new("/no/such/path.toml"))).unwrap_err();
         assert_eq!(err.sub_code, PresetSubCode::FileNotFound);
+    }
+
+    #[test]
+    fn github_file_blob_routes_to_raw() {
+        let c = classify(
+            &tech(),
+            "https://github.com/tokio-rs/tokio/blob/master/tokio/src/runtime/mod.rs",
+            false,
+        )
+        .unwrap();
+        assert_eq!(c.route().kind, "github-file");
+        assert_eq!(c.route().executor, Executor::Postagent);
+        assert!(
+            c.route()
+                .command_template
+                .contains("raw.githubusercontent.com/tokio-rs/tokio/master/tokio/src/runtime/mod.rs"),
+            "got: {}",
+            c.route().command_template
+        );
+    }
+
+    #[test]
+    fn github_tree_routes_to_contents_api() {
+        let c = classify(
+            &tech(),
+            "https://github.com/tokio-rs/tokio/tree/master/tokio/src/runtime",
+            false,
+        )
+        .unwrap();
+        assert_eq!(c.route().kind, "github-tree");
+        assert!(c
+            .route()
+            .command_template
+            .contains("api.github.com/repos/tokio-rs/tokio/contents/tokio/src/runtime?ref=master"));
+    }
+
+    #[test]
+    fn github_tree_empty_tail_routes() {
+        let c = classify(
+            &tech(),
+            "https://github.com/tokio-rs/tokio/tree/master",
+            false,
+        )
+        .unwrap();
+        assert_eq!(c.route().kind, "github-tree");
+        assert!(c
+            .route()
+            .command_template
+            .contains("api.github.com/repos/tokio-rs/tokio/contents/?ref=master"));
+    }
+
+    #[test]
+    fn github_raw_passthrough() {
+        let c = classify(
+            &tech(),
+            "https://raw.githubusercontent.com/rust-lang/rust/master/README.md",
+            false,
+        )
+        .unwrap();
+        assert_eq!(c.route().kind, "github-raw");
+        assert!(c
+            .route()
+            .command_template
+            .contains("raw.githubusercontent.com/rust-lang/rust/master/README.md"));
+    }
+
+    #[test]
+    fn github_repo_readme_still_wins_for_two_segments() {
+        // Adding the new 5-segment rules must not shadow the 2-segment repo-readme.
+        let c = classify(&tech(), "https://github.com/bytedance/monoio", false).unwrap();
+        assert_eq!(c.route().kind, "github-repo-readme");
+    }
+
+    #[test]
+    fn var_capture_non_tail_fails_load() {
+        let bad = r#"
+name = "bad"
+[[rule]]
+kind = "x"
+host = "example.com"
+path_segments = ["{...head}", "tail"]
+executor = "postagent"
+template = 'echo {head}'
+[fallback]
+kind = "fb"
+executor = "browser"
+template = "fb"
+"#;
+        let err = parse_and_compile(bad, Some("test".into())).unwrap_err();
+        assert_eq!(err.sub_code, PresetSubCode::SchemaInvalid);
+        assert!(err.message.contains("must be the last path segment"));
     }
 
     #[test]
