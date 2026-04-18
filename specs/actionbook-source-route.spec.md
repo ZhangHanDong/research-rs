@@ -4,6 +4,8 @@ inherits: project
 tags: [actionbook, cli, routing, research-workflow, phase-3]
 estimate: 1d
 depends: []
+status: implemented
+implementation: actionbook commit 75e157f9; SKILL.md updated 2026-04-18
 ---
 
 ## 意图
