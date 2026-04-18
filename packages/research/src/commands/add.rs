@@ -272,30 +272,58 @@ fn run_postagent(
     let api_url = extract_api_url(&decision.command_template).unwrap_or_default();
     match postagent::run(&api_url, timeout_ms) {
         Ok(raw) => {
-            if raw.exit_code != 0 {
-                let outcome = fetch::FetchOutcome {
-                    accepted: false,
-                    observed_url: None,
-                    observed_bytes: raw.raw_stdout.len() as u64,
-                    reject_reason: Some(RejectReason::FetchFailed),
-                    warnings: vec![format!("postagent exit {}", raw.exit_code)],
-                    bytes: raw.raw_stdout.len() as u64,
-                };
-                return (raw.raw_stdout, outcome, "postagent".into());
-            }
-            let parsed = postagent::parse(&raw);
-            let outcome = match parsed {
-                Some(p) => smell::judge_api(&smell::ApiResponse {
-                    status: p.status,
-                    body_non_empty: p.body_non_empty,
-                    body_bytes: p.body_bytes,
-                }),
+            // postagent's exit code is 0 on 2xx AND network failures, but
+            // 1 on HTTP 4xx/5xx. The authoritative signal is parse()'s
+            // structural view of stdout/stderr, not the raw exit code.
+            let stderr_text = String::from_utf8_lossy(&raw.raw_stderr).into_owned();
+            let stderr_has_warning_marker =
+                stderr_text.contains('⚠') || stderr_text.contains("connection failed");
+            let outcome = match postagent::parse(&raw) {
+                Some(p) => {
+                    if p.status.is_none() {
+                        // network failure (DNS, connect refused)
+                        let first = stderr_text
+                            .lines()
+                            .next()
+                            .unwrap_or("postagent network failure")
+                            .to_string();
+                        fetch::FetchOutcome {
+                            accepted: false,
+                            observed_url: None,
+                            observed_bytes: 0,
+                            reject_reason: Some(RejectReason::FetchFailed),
+                            warnings: vec![first],
+                            bytes: 0,
+                        }
+                    } else if raw.exit_code != 0 && !stderr_has_warning_marker {
+                        // Non-zero exit with no recognized pattern → process
+                        // crashed / killed / wrote noise; treat as fetch fail.
+                        fetch::FetchOutcome {
+                            accepted: false,
+                            observed_url: None,
+                            observed_bytes: raw.raw_stdout.len() as u64,
+                            reject_reason: Some(RejectReason::FetchFailed),
+                            warnings: vec![format!(
+                                "postagent exit {} without expected pattern; stderr: {}",
+                                raw.exit_code,
+                                stderr_text.lines().next().unwrap_or("")
+                            )],
+                            bytes: raw.raw_stdout.len() as u64,
+                        }
+                    } else {
+                        smell::judge_api(&smell::ApiResponse {
+                            status: p.status,
+                            body_non_empty: p.body_non_empty,
+                            body_bytes: p.body_bytes,
+                        })
+                    }
+                }
                 None => fetch::FetchOutcome {
                     accepted: false,
                     observed_url: None,
                     observed_bytes: raw.raw_stdout.len() as u64,
                     reject_reason: Some(RejectReason::FetchFailed),
-                    warnings: vec!["postagent stdout not valid JSON".into()],
+                    warnings: vec![format!("postagent output unparseable (exit {})", raw.exit_code)],
                     bytes: raw.raw_stdout.len() as u64,
                 },
             };

@@ -89,19 +89,22 @@ impl Env {
 // ── Fake subprocess scripts ─────────────────────────────────────────────────
 
 fn fake_postagent_happy() -> String {
-    // Emits a valid postagent-style envelope: { status, body, headers }
+    // Real postagent contract: raw response body on stdout, stderr empty.
     r#"#!/bin/sh
 cat <<'JSON'
-{"status":200,"body":{"title":"Hello","score":100},"headers":{}}
+{"title":"Hello","score":100}
 JSON
 "#.to_string()
 }
 
 fn fake_postagent_404() -> String {
+    // Real postagent contract on 4xx: stdout empty, stderr carries the
+    // ⚠ <status> — ... warning line (+ optional body echo).
     r#"#!/bin/sh
-cat <<'JSON'
-{"status":404,"body":{},"headers":{}}
-JSON
+printf '%s\n' '⚠ 404 — endpoint does not exist at https://example.test/missing' >&2
+printf '%s\n' 'HTTP 404 Not Found' >&2
+printf '%s\n' '{"message":"Not Found"}' >&2
+exit 0
 "#.to_string()
 }
 

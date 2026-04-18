@@ -1,8 +1,19 @@
-//! Spawn `postagent send --anonymous --json <api_url>` and parse its response.
+//! Spawn `postagent send --anonymous <api_url>` and interpret its output.
+//!
+//! Real postagent contract (verified L1 contract smoke, 2026-04-19):
+//! - No `--json` flag — postagent's stdout IS the HTTP response body.
+//! - Exit code is always 0 — success/failure must be deduced from the
+//!   stdout/stderr split.
+//! - Success: stdout = raw body, stderr empty.
+//! - HTTP 4xx/5xx: stdout empty, stderr contains line like
+//!     `⚠ 404 — endpoint does not exist at <url>`
+//!     followed by `HTTP <code> <phrase>` and the response body echoed.
+//! - Network failure (DNS, connection refused): stderr has
+//!     `⚠ connection failed — DNS lookup or connect refused for <url>`
+//!     and stdout is empty.
 //!
 //! URL passed as argv — never via shell. Stdout capped at 16 MiB.
 
-use serde_json::Value;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -16,24 +27,24 @@ pub fn binary() -> String {
 }
 
 /// Run postagent. `api_url` is the full HTTP URL the subprocess will GET.
-/// Returns RawFetch on clean exit; Err on spawn / timeout / cap-exceeded.
+/// Returns RawFetch; caller inspects stdout/stderr to determine success.
 pub fn run(api_url: &str, timeout_ms: u64) -> Result<RawFetch, String> {
     let bin = binary();
     let start = Instant::now();
     let mut child = Command::new(&bin)
         .arg("send")
         .arg("--anonymous")
-        .arg("--json")
         .arg(api_url) // argv — no shell
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => format!("MISSING_DEPENDENCY: postagent binary '{bin}' not found on PATH (install postagent or set POSTAGENT_BIN)"),
+            std::io::ErrorKind::NotFound => format!(
+                "MISSING_DEPENDENCY: postagent binary '{bin}' not found on PATH (install postagent or set POSTAGENT_BIN)"
+            ),
             _ => format!("spawn postagent: {e}"),
         })?;
 
-    // Capture stdout with size cap; poll for timeout.
     let mut stdout = child.stdout.take().ok_or_else(|| "no stdout pipe".to_string())?;
     let mut stderr = child.stderr.take().ok_or_else(|| "no stderr pipe".to_string())?;
     let deadline = start + Duration::from_millis(timeout_ms);
@@ -46,7 +57,6 @@ pub fn run(api_url: &str, timeout_ms: u64) -> Result<RawFetch, String> {
                 Ok(0) => break,
                 Ok(n) => {
                     if buf.len() + n > POSTAGENT_STDOUT_CAP {
-                        // mark overflow by returning Err
                         return Err(buf.len() as u64);
                     }
                     buf.extend_from_slice(&tmp[..n]);
@@ -63,7 +73,6 @@ pub fn run(api_url: &str, timeout_ms: u64) -> Result<RawFetch, String> {
         buf
     });
 
-    // Poll for exit / timeout
     let exit_code = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s.code().unwrap_or(-1),
@@ -96,8 +105,12 @@ pub fn run(api_url: &str, timeout_ms: u64) -> Result<RawFetch, String> {
     })
 }
 
-/// Parse postagent stdout into a lightweight structural view useful for the
-/// smell test. Accepts any JSON; caller decides interpretation.
+/// Parse postagent stdout/stderr into a structural view for the smell test.
+///
+/// Logic: postagent always exits 0, so we deduce success from output:
+/// - stdout non-empty + no `⚠` in stderr → success (status 200)
+/// - stderr matches `⚠ <digits> —` → extract status (e.g. 404)
+/// - stderr matches `⚠ connection failed` → status = None (network error)
 pub struct ParsedApi {
     pub status: Option<i32>,
     pub body_bytes: u64,
@@ -105,19 +118,104 @@ pub struct ParsedApi {
 }
 
 pub fn parse(raw: &RawFetch) -> Option<ParsedApi> {
-    let v: Value = serde_json::from_slice(&raw.raw_stdout).ok()?;
-    let status = v.get("status").and_then(|s| s.as_i64()).map(|n| n as i32);
-    let body_bytes = raw.raw_stdout.len() as u64;
-    let body_non_empty = match v.get("body") {
-        Some(Value::Null) | None => !v.as_object().map(|o| o.is_empty()).unwrap_or(true),
-        Some(Value::String(s)) => !s.trim().is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(o)) => !o.is_empty(),
-        Some(_) => true,
-    };
+    let stderr = String::from_utf8_lossy(&raw.raw_stderr);
+    let stdout_len = raw.raw_stdout.len() as u64;
+    let stdout_trimmed_non_empty = !raw.raw_stdout.iter().all(|b| b.is_ascii_whitespace());
+
+    // HTTP error pattern: ⚠ <status> —
+    if let Some(status) = extract_http_status(&stderr) {
+        return Some(ParsedApi {
+            status: Some(status),
+            body_bytes: stdout_len,
+            body_non_empty: stdout_trimmed_non_empty,
+        });
+    }
+
+    // Network error pattern: ⚠ connection failed
+    if stderr.contains("connection failed") || stderr.contains("DNS lookup") {
+        return Some(ParsedApi {
+            status: None,
+            body_bytes: 0,
+            body_non_empty: false,
+        });
+    }
+
+    // Default: success if stdout has content.
     Some(ParsedApi {
-        status,
-        body_bytes,
-        body_non_empty,
+        status: Some(200),
+        body_bytes: stdout_len,
+        body_non_empty: stdout_trimmed_non_empty,
     })
+}
+
+/// Extract an HTTP status code from stderr like `⚠ 404 — ...`.
+fn extract_http_status(stderr: &str) -> Option<i32> {
+    for line in stderr.lines() {
+        let t = line.trim();
+        // strip the warning glyph prefix
+        let rest = t.strip_prefix("⚠").or_else(|| t.strip_prefix("⚠ "))?.trim();
+        // first token should be the status code
+        let first_word = rest.split_whitespace().next()?;
+        if let Ok(n) = first_word.parse::<i32>() {
+            if (100..600).contains(&n) {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk(stdout: &[u8], stderr: &[u8]) -> RawFetch {
+        RawFetch {
+            raw_stdout: stdout.to_vec(),
+            raw_stderr: stderr.to_vec(),
+            exit_code: 0,
+            duration_ms: 1,
+        }
+    }
+
+    #[test]
+    fn parse_success() {
+        let p = parse(&mk(b"[1,2,3]", b"")).unwrap();
+        assert_eq!(p.status, Some(200));
+        assert!(p.body_non_empty);
+    }
+
+    #[test]
+    fn parse_404_from_stderr() {
+        let stderr = "⚠ 404 — endpoint does not exist at https://x/y\nHTTP 404 Not Found\n";
+        let p = parse(&mk(b"", stderr.as_bytes())).unwrap();
+        assert_eq!(p.status, Some(404));
+        assert!(!p.body_non_empty);
+    }
+
+    #[test]
+    fn parse_network_failure() {
+        let stderr = "⚠ connection failed — DNS lookup or connect refused for https://x.invalid/\n";
+        let p = parse(&mk(b"", stderr.as_bytes())).unwrap();
+        assert_eq!(p.status, None);
+        assert!(!p.body_non_empty);
+    }
+
+    #[test]
+    fn parse_success_ignores_empty_lines_in_stderr() {
+        let p = parse(&mk(b"{\"ok\":true}", b"\n")).unwrap();
+        assert_eq!(p.status, Some(200));
+    }
+
+    #[test]
+    fn extract_http_status_matches_warning_lines() {
+        assert_eq!(
+            extract_http_status("⚠ 500 — server error"),
+            Some(500)
+        );
+        assert_eq!(
+            extract_http_status("⚠ connection failed — refused"),
+            None
+        );
+    }
 }
