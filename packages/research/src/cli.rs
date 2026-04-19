@@ -159,6 +159,15 @@ pub enum Commands {
         #[arg(long)]
         open: bool,
     },
+    /// Diff: list sources fetched-but-uncited (unused) and body-but-unfetched (hallucinated).
+    Diff {
+        slug: Option<String>,
+        /// Only list unused sources; omit the hallucinated/missing set.
+        #[arg(long = "unused-only")]
+        unused_only: bool,
+    },
+    /// Coverage: fact-based completeness stats + report_ready blockers.
+    Coverage { slug: Option<String> },
     /// Show help (alias of --help).
     Help,
 }
@@ -270,6 +279,8 @@ fn dispatch(cmd: Commands) -> Envelope {
             commands::route::run(&url, prefer.as_deref(), rules.as_deref(), preset.as_deref())
         }
         Commands::Series { tag, open } => commands::series::run(&tag, open),
+        Commands::Diff { slug, unused_only } => commands::diff::run(slug.as_deref(), unused_only),
+        Commands::Coverage { slug } => commands::coverage::run(slug.as_deref()),
         Commands::Help => unreachable!("Help handled in run()"),
     }
 }
