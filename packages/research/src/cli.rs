@@ -121,13 +121,19 @@ pub enum Commands {
     /// Render an editorial report from a session (rich-html and future formats).
     Report {
         slug: Option<String>,
-        /// Output format. v1 supports: rich-html.
+        /// Output format. Supported: rich-html, brief-md.
         #[arg(long)]
         format: String,
         #[arg(long)]
         open: bool,
         #[arg(long = "no-open")]
         no_open: bool,
+        /// (brief-md only) print to stdout instead of writing a file.
+        #[arg(long)]
+        stdout: bool,
+        /// (brief-md only) explicit output path; default: <session>/report-brief.md.
+        #[arg(long)]
+        output: Option<String>,
     },
     /// Mark a session closed (files preserved).
     Close { slug: Option<String> },
@@ -248,8 +254,15 @@ fn dispatch(cmd: Commands) -> Envelope {
         Commands::Synthesize { slug, no_render, open } => {
             commands::synthesize::run(slug.as_deref(), no_render, open)
         }
-        Commands::Report { slug, format, open, no_open } => {
-            commands::report::run(slug.as_deref(), &format, open, no_open)
+        Commands::Report { slug, format, open, no_open, stdout, output } => {
+            commands::report::run(
+                slug.as_deref(),
+                &format,
+                open,
+                no_open,
+                stdout,
+                output.as_deref(),
+            )
         }
         Commands::Close { slug } => commands::close::run(slug.as_deref()),
         Commands::Rm { slug, force } => commands::rm::run(&slug, force),
