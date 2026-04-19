@@ -70,11 +70,19 @@ pub fn run(slug_arg: Option<&str>) -> Envelope {
             _ => None,
         })
         .collect();
+    let accepted_kinds: HashSet<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::SourceAccepted { kind, .. } => Some(kind.clone()),
+            _ => None,
+        })
+        .collect();
     let body_links: HashSet<String> = md_parser::extract_http_links(&md, true)
         .into_iter()
         .collect();
 
     let sources_accepted = accepted.len();
+    let source_kind_diversity = accepted_kinds.len();
     let sources_referenced_in_body = accepted.intersection(&body_links).count();
     let sources_unused = accepted.difference(&body_links).count();
     let sources_hallucinated = body_links.difference(&accepted).count();
@@ -133,6 +141,7 @@ pub fn run(slug_arg: Option<&str>) -> Envelope {
             "diagrams_referenced": diagrams_referenced,
             "diagrams_resolved": diagrams_resolved,
             "sources_accepted": sources_accepted,
+            "source_kind_diversity": source_kind_diversity,
             "sources_referenced_in_body": sources_referenced_in_body,
             "sources_unused": sources_unused,
             "sources_hallucinated": sources_hallucinated,

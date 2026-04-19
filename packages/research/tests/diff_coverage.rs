@@ -263,3 +263,32 @@ fn coverage_hallucinated_source_blocks() {
         .iter()
         .any(|b| b.as_str().unwrap().contains("sources_hallucinated")));
 }
+
+// v2 Step 2 — source_kind_diversity (output-only, non-blocker) ───────────
+
+#[test]
+fn coverage_reports_source_kind_diversity() {
+    let env = Env::new();
+    let overview: String = "y".repeat(300);
+    let md = format!(
+        "## Overview\n{overview}\n\n## 01 · A\na.\n\n## 02 · B\nb.\n\n## 03 · C\nc.\n"
+    );
+    env.prep_session("cdiv", &md);
+    env.append_jsonl(
+        "cdiv",
+        &[
+            &accepted_event("2026-04-20T10:00:00Z", "https://a.test/", "arxiv-abs", 1),
+            &accepted_event("2026-04-20T10:00:01Z", "https://b.test/", "github-repo", 1),
+            &accepted_event("2026-04-20T10:00:02Z", "https://c.test/", "hn-item", 1),
+            // Duplicate kind — must not inflate the diversity count.
+            &accepted_event("2026-04-20T10:00:03Z", "https://d.test/", "arxiv-abs", 1),
+        ],
+    );
+    let (v, code, _) = env.research(&["coverage", "cdiv", "--json"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        v["data"]["source_kind_diversity"], 3,
+        "3 unique kinds from 4 accepted sources"
+    );
+    assert_eq!(v["data"]["sources_accepted"], 4);
+}

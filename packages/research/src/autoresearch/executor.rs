@@ -469,6 +469,7 @@ fn coverage_signature(coverage: &Value) -> String {
         "diagrams_referenced",
         "diagrams_resolved",
         "sources_accepted",
+        "source_kind_diversity",
         "sources_referenced_in_body",
         "sources_unused",
         "sources_hallucinated",
