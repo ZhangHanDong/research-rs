@@ -7,4 +7,5 @@
 //!   json-ui dependency.
 
 pub mod builder;
+pub mod markdown;
 pub mod template;

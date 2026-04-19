@@ -16,6 +16,7 @@ use std::process::Command;
 use std::time::Instant;
 
 use crate::output::Envelope;
+use crate::report::markdown::{self, RenderError};
 use crate::report::template::{self, Slots};
 use crate::session::{active, config, layout};
 
@@ -105,15 +106,35 @@ pub fn run(slug_arg: Option<&str>, format: &str, open: bool, _no_open: bool) -> 
         slug, tags_str, cfg.preset
     );
 
+    // Phase B: markdown → HTML with aside / diagram / section-num conventions.
+    let session_dir = layout::session_dir(&slug);
+    let rendered = match markdown::render_body(&md, &session_dir) {
+        Ok(r) => r,
+        Err(RenderError::DiagramOutOfBounds(p)) => {
+            return Envelope::fail(
+                CMD,
+                "DIAGRAM_OUT_OF_BOUNDS",
+                format!(
+                    "diagram path '{}' resolves outside session_dir/diagrams/",
+                    p.display()
+                ),
+            )
+            .with_context(json!({ "session": slug }));
+        }
+    };
+
+    let warnings = rendered.warnings.clone();
+    let diagrams_inlined = rendered.diagrams_inlined;
+
     let slots = Slots {
         title: cfg.topic.clone(),
         subtitle,
-        // Phase B fills these; Phase A leaves them empty.
-        aside_quote: String::new(),
-        body_html: "<p><em>Body rendering arrives in Phase B.</em></p>".into(),
+        aside_quote: rendered.aside_html,
+        body_html: rendered.body_html,
+        // Phase C fills this; Phase B still stubs sources.
         sources_html: "<p><em>Source listing arrives in Phase C.</em></p>".into(),
         generated_at: Utc::now().to_rfc3339(),
-        session_footer: layout::session_dir(&slug).display().to_string(),
+        session_footer: session_dir.display().to_string(),
     };
 
     let html = template::render(&slots);
@@ -153,8 +174,9 @@ pub fn run(slug_arg: Option<&str>, format: &str, open: bool, _no_open: bool) -> 
             "bytes": html.len(),
             "duration_ms": duration_ms,
             "open_skipped": open_skipped,
-            "warnings": Vec::<String>::new(),
-            "phase": "A",
+            "warnings": warnings,
+            "diagrams_inlined": diagrams_inlined,
+            "phase": "B",
         }),
     )
     .with_context(json!({ "session": slug }))

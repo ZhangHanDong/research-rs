@@ -22,6 +22,7 @@ dirs = "6"
 fs2 = "0.4"
 toml = "0.8"
 regex = "1"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [dev-dependencies]
 tempfile = "3"
