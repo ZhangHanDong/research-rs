@@ -6,6 +6,7 @@ pub mod add;
 pub mod close;
 pub mod list;
 pub mod new;
+pub mod report;
 pub mod resume;
 pub mod rm;
 pub mod route;

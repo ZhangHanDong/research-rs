@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{TITLE}}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f4ed;
+      --color-paper-2: #efeee5;
+      --color-ink:     #0b0d0b;
+      --color-muted:   #52534e;
+      --color-soft:    #65655c;
+      --color-rule:    rgba(11,13,11,0.10);
+      --color-accent:  #f7591f;
+      --color-link:    #1a70c7;
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+    html, body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      line-height: 1.6;
+    }
+    body { padding: 3rem 2rem 6rem; }
+    .frame { max-width: 980px; margin: 0 auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(2rem, 3vw + 1rem, 2.8rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      margin-bottom: 0.5rem;
+    }
+    h2 {
+      font-family: var(--font-serif);
+      font-size: 1.6rem;
+      font-weight: 400;
+      letter-spacing: -0.01em;
+      margin: 2.8rem 0 0.6rem;
+      display: flex;
+      align-items: baseline;
+      gap: 0.8rem;
+    }
+    h2 .section-num {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      font-weight: 500;
+      letter-spacing: 0.15em;
+      color: var(--color-accent);
+    }
+    h3 {
+      font-family: var(--font-sans);
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 1.8rem 0 0.4rem;
+      letter-spacing: -0.005em;
+    }
+    p {
+      font-size: 0.98rem;
+      margin-bottom: 0.9rem;
+      color: var(--color-ink);
+    }
+    .sub {
+      font-family: var(--font-sans);
+      font-size: 0.92rem;
+      color: var(--color-muted);
+      margin-bottom: 2rem;
+    }
+    .sub a, .sub a:visited {
+      color: var(--color-link);
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 2px;
+    }
+
+    .aside {
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-size: 1.05rem;
+      color: var(--color-soft);
+      border-left: 2px solid var(--color-accent);
+      padding: 0.4rem 0 0.4rem 1rem;
+      margin: 1.4rem 0;
+    }
+
+    code, kbd {
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      background: rgba(11,13,11,0.05);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    pre {
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      background: #ffffff;
+      border: 1px solid var(--color-rule);
+      border-radius: 6px;
+      padding: 0.9rem 1rem;
+      overflow-x: auto;
+      margin: 0.6rem 0 1.2rem;
+      line-height: 1.5;
+    }
+    pre code { background: transparent; padding: 0; }
+
+    ul { margin: 0.4rem 0 1rem 1.4rem; }
+    li { margin-bottom: 0.3rem; font-size: 0.96rem; }
+
+    a, a:visited {
+      color: var(--color-link);
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 2px;
+    }
+    a:hover { color: var(--color-accent); }
+
+    .diagram {
+      background: var(--color-paper-2);
+      border: 1px solid var(--color-rule);
+      border-radius: 8px;
+      padding: 1.2rem 1rem;
+      margin: 1.2rem 0 1.6rem;
+    }
+    .diagram svg { display: block; width: 100%; min-width: 600px; }
+    .caption {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      color: var(--color-muted);
+      text-transform: uppercase;
+      margin-top: 0.6rem;
+      text-align: center;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 0.8rem 0 1.6rem;
+      font-size: 0.94rem;
+    }
+    table th, table td {
+      text-align: left;
+      padding: 0.55rem 0.9rem;
+      border-bottom: 1px solid var(--color-rule);
+      vertical-align: top;
+    }
+    table th {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      font-weight: 500;
+      border-bottom: 1px solid rgba(11,13,11,0.2);
+    }
+
+    .sources {
+      margin-top: 3rem;
+      padding-top: 1.6rem;
+      border-top: 1px solid var(--color-rule);
+    }
+    .sources h2 { margin-top: 0; }
+    .sources ul { list-style: none; margin-left: 0; }
+    .sources li {
+      font-size: 0.88rem;
+      font-family: var(--font-mono);
+      padding: 0.3rem 0;
+      display: flex;
+      gap: 0.8rem;
+    }
+    .sources .kind {
+      color: var(--color-muted);
+      flex-shrink: 0;
+      width: 10em;
+    }
+
+    hr {
+      border: 0;
+      border-top: 1px solid var(--color-rule);
+      margin: 2.4rem 0;
+    }
+    .footer {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--color-muted);
+      letter-spacing: 0.1em;
+      text-align: center;
+      margin-top: 4rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+
+    <p class="eyebrow">Research report</p>
+    <h1>{{TITLE}}</h1>
+    <p class="sub">{{SUBTITLE}}</p>
+
+    {{ASIDE_QUOTE}}
+
+    {{BODY_HTML}}
+
+    <div class="sources">
+      <h2><span class="section-num">SOURCES</span><span>All linked</span></h2>
+      {{SOURCES_HTML}}
+    </div>
+
+    <p class="footer">
+      {{SESSION_FOOTER}} · generated {{GENERATED_AT}}
+    </p>
+  </div>
+</body>
+</html>

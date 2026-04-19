@@ -1,3 +1,10 @@
-//! Report assembly — session state → json-ui report.json structure.
+//! Report assembly. Two flavors:
+//!
+//! * `builder` — legacy synthesize path: session → json-ui `report.json`,
+//!   consumed by the external `json-ui` renderer.
+//! * `template` — new editorial path: session → embedded HTML template with
+//!   placeholder substitution. Produces `report-rich.html` directly, no
+//!   json-ui dependency.
 
 pub mod builder;
+pub mod template;

@@ -90,6 +90,17 @@ pub enum Commands {
         #[arg(long)]
         open: bool,
     },
+    /// Render an editorial report from a session (rich-html and future formats).
+    Report {
+        slug: Option<String>,
+        /// Output format. v1 supports: rich-html.
+        #[arg(long)]
+        format: String,
+        #[arg(long)]
+        open: bool,
+        #[arg(long = "no-open")]
+        no_open: bool,
+    },
     /// Mark a session closed (files preserved).
     Close { slug: Option<String> },
     /// Remove a session directory.
@@ -175,6 +186,9 @@ fn dispatch(cmd: Commands) -> Envelope {
         }
         Commands::Synthesize { slug, no_render, open } => {
             commands::synthesize::run(slug.as_deref(), no_render, open)
+        }
+        Commands::Report { slug, format, open, no_open } => {
+            commands::report::run(slug.as_deref(), &format, open, no_open)
         }
         Commands::Close { slug } => commands::close::run(slug.as_deref()),
         Commands::Rm { slug, force } => commands::rm::run(&slug, force),
