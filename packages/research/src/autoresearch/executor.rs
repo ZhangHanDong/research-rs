@@ -123,7 +123,7 @@ pub async fn run(
         // ── Build prompts from session state ──────────────────────────
         let coverage_before = coverage_json(slug, research_bin);
         let unread = collect_unread_sources(slug, 3, 2000);
-        let system = system_prompt();
+        let system = system_prompt(slug);
         let user = user_prompt(slug, &coverage_before, &unread, iter, cfg.iterations);
 
         // ── Ask provider ──────────────────────────────────────────────
@@ -330,7 +330,17 @@ fn parse_response(raw: &str) -> Result<LoopResponse, String> {
         .map_err(|e| format!("serde: {e}"))
 }
 
-fn system_prompt() -> String {
+fn system_prompt(slug: &str) -> String {
+    let base = base_system_prompt();
+    match crate::session::schema::prompt_body(slug) {
+        Some(extra) => format!(
+            "{base}\n\n── Session-specific schema guidance (from <session>/SCHEMA.md) ──\n{extra}\n"
+        ),
+        None => base,
+    }
+}
+
+fn base_system_prompt() -> String {
     r###"You drive a research CLI. Each turn respond with STRICT JSON matching
 this exact schema — no prose before or after, no code fences, nothing but
 the JSON object:

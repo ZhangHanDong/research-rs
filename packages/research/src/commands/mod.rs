@@ -16,6 +16,7 @@ pub mod report;
 pub mod resume;
 pub mod rm;
 pub mod route;
+pub mod schema;
 pub mod series;
 pub mod show;
 pub mod sources;

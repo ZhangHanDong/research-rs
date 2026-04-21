@@ -200,6 +200,19 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+
+    /// v3: the session `SCHEMA.md` was created or edited (by `research
+    /// new` seed, `research schema edit`, or direct user edit detected
+    /// via mtime change). Loop readers re-read SCHEMA.md on the next
+    /// iteration; recording the write lets `research status` surface
+    /// "schema touched since last loop step." `body_chars` gauges how
+    /// much schema guidance is in play.
+    SchemaUpdated {
+        timestamp: DateTime<Utc>,
+        body_chars: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

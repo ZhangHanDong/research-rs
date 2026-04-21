@@ -63,6 +63,13 @@ pub fn session_wiki_dir(slug: &str) -> PathBuf {
     session_dir(slug).join("wiki")
 }
 
+/// v3 session-schema path: `<session>/SCHEMA.md`. Human-editable
+/// guidance appended to the loop's system prompt each iteration, the
+/// equivalent of karpathy LLM-Wiki's session-level `CLAUDE.md`.
+pub fn session_schema_md(slug: &str) -> PathBuf {
+    session_dir(slug).join("SCHEMA.md")
+}
+
 /// Absolute path for a given wiki page slug within a session.
 pub fn session_wiki_page(slug: &str, page_slug: &str) -> PathBuf {
     session_wiki_dir(slug).join(format!("{page_slug}.md"))

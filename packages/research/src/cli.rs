@@ -222,8 +222,28 @@ pub enum Commands {
         #[command(subcommand)]
         sub: WikiCmd,
     },
+    /// Show or edit the per-session SCHEMA.md (v3).
+    Schema {
+        #[command(subcommand)]
+        sub: SchemaCmd,
+    },
     /// Show help (alias of --help).
     Help,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SchemaCmd {
+    /// Print the session's SCHEMA.md.
+    Show {
+        #[arg(long)]
+        slug: Option<String>,
+    },
+    /// Open `$EDITOR` on the session's SCHEMA.md; logs `SchemaUpdated`
+    /// on change so the loop re-reads it next iteration.
+    Edit {
+        #[arg(long)]
+        slug: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -397,6 +417,10 @@ fn dispatch(cmd: Commands) -> Envelope {
             WikiCmd::Rm { page, slug, force } => {
                 commands::wiki::run_rm(&page, slug.as_deref(), force)
             }
+        },
+        Commands::Schema { sub } => match sub {
+            SchemaCmd::Show { slug } => commands::schema::run_show(slug.as_deref()),
+            SchemaCmd::Edit { slug } => commands::schema::run_edit(slug.as_deref()),
         },
         Commands::Help => unreachable!("Help handled in run()"),
     }
