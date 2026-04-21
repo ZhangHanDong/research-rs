@@ -283,26 +283,40 @@ fn count_diagrams_resolved(slug: &str, md: &str) -> usize {
 /// Collect every `![alt](diagrams/foo.svg)` relative path. Only matches
 /// the exact `diagrams/…` prefix and `.svg` extension.
 fn diagram_ref_paths(md: &str) -> Vec<String> {
+    diagram_refs_with_alt(md).into_iter().map(|(p, _)| p).collect()
+}
+
+/// Same but also surfaces the `![alt](diagrams/x.svg)` alt text so the
+/// loop's user-prompt can tell the agent what caption to restore.
+/// Exposed at crate visibility so `autoresearch::executor` can print
+/// unresolved refs without duplicating the regex.
+pub(crate) fn diagram_refs_with_alt(md: &str) -> Vec<(String, String)> {
     let re = diagram_re();
     re.captures_iter(md)
         .filter_map(|c| {
-            let rel = c.get(1)?.as_str();
-            // Strip the `diagrams/` prefix so we can join against diagrams_root.
-            rel.strip_prefix("diagrams/").map(str::to_string)
+            let alt = c.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let rel = c.get(2)?.as_str();
+            rel.strip_prefix("diagrams/").map(|p| (p.to_string(), alt))
         })
         .collect()
+}
+
+/// True iff `<session>/diagrams/<rel>` exists on disk.
+pub(crate) fn diagram_path_resolved(slug: &str, rel: &str) -> bool {
+    layout::session_dir(slug).join("diagrams").join(rel).is_file()
 }
 
 fn diagram_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // Match `![...](diagrams/foo.svg)` variants:
+        // Match `![alt](diagrams/foo.svg)` variants:
         //   - case-insensitive `.svg` / `.SVG`
         //   - optional markdown title: `![t](diagrams/x.svg "caption")`
+        // Capture group 1 = alt, group 2 = `diagrams/<path>.svg`.
         // Mirrors what the markdown renderer already accepts — the two
         // layers must agree or `diagrams_referenced` drifts below what
         // the rendered report actually shows.
-        Regex::new(r#"(?i)!\[[^\]]*\]\((diagrams/[^)\s]+\.svg)(?:\s+"[^"]*")?\)"#)
+        Regex::new(r#"(?i)!\[([^\]]*)\]\((diagrams/[^)\s]+\.svg)(?:\s+"[^"]*")?\)"#)
             .expect("diagram regex")
     })
 }

@@ -389,6 +389,28 @@ Rules:
   but does NOT auto-insert the reference — you must also emit a
   `write_section` whose body contains `![{alt}](diagrams/{path})`.
 
+FIGURE-RICH CONTRACT (non-negotiable, v3):
+  * A report with no diagrams is INCOMPLETE. Target: ≥ 1 diagram per
+    numbered section; at minimum ≥ 1 diagram before `report_ready`.
+    The coverage blocker `diagrams_referenced < 1` enforces the floor
+    and WILL keep the loop running past "prose feels done."
+  * BIDIRECTIONAL RULE: every `![alt](diagrams/x.svg)` markdown
+    reference you write MUST be paired with a `write_diagram` action
+    (path=x.svg) in the SAME turn or an earlier turn. An orphan
+    reference renders as a broken "diagram pending" placeholder in
+    the report and blocks `report_ready` via
+    `diagrams_resolved < diagrams_referenced`.
+  * Every `write_diagram` MUST be paired with a matching
+    `write_section` whose body contains the reference — a dangling
+    SVG file on disk with no reference is also incomplete.
+  * If you find yourself writing "(see diagram above)" or "imagine a
+    flow chart here" instead of emitting a diagram, STOP and emit the
+    diagram instead. Hand-drawn SVG is part of the expected output,
+    not a bonus.
+  * If a previous turn left a dangling `diagrams/x.svg` reference,
+    the user prompt will surface it as an "⚠ UNRESOLVED DIAGRAM
+    REFERENCE" block — fix it THAT TURN, before any other action.
+
 Workflow: plan → fetch → digest + write → mark diagrams.
 - First-iteration contract: on a FRESH session with no `## Plan` section
   yet, the loop accepts ONLY a `write_plan` action. Any other action is
@@ -505,6 +527,27 @@ fn user_prompt(
     out.push_str(&serde_json::to_string_pretty(coverage).unwrap_or_default());
     out.push_str("\n\n");
 
+    // v3: surface UNRESOLVED diagram references at the top so the
+    // agent can't miss them. The bidirectional contract is: every
+    // `![alt](diagrams/x.svg)` reference requires a `write_diagram`
+    // with path=x.svg on disk. Without this block, Claude tends to
+    // write the markdown reference once and move on — the loop caught
+    // this on tokio-v3 live smoke.
+    let unresolved = unresolved_diagram_refs(slug);
+    if !unresolved.is_empty() {
+        out.push_str(&format!(
+            "⚠ {} UNRESOLVED DIAGRAM REFERENCE(S) — emit `write_diagram` THIS TURN for each path below. Every `![alt](diagrams/x.svg)` you wrote is currently pointing at a missing file; the report renders a 'diagram pending' placeholder in its place. This is a coverage blocker. Do NOT start new numbered sections until every referenced diagram has a matching `write_diagram` with an inline SVG body.\n\n",
+            unresolved.len()
+        ));
+        for (path, alt) in &unresolved {
+            let alt_display = if alt.is_empty() { "(no alt text)" } else { alt };
+            out.push_str(&format!("  - path: {path}    alt: {alt_display}\n"));
+        }
+        out.push_str(
+            "\nEmit shape (one per path above):\n  { \"type\": \"write_diagram\", \"path\": \"<path>\", \"alt\": \"<alt>\", \"svg\": \"<svg xmlns=\\\"http://www.w3.org/2000/svg\\\" viewBox=\\\"0 0 800 400\\\">…</svg>\" }\n\n",
+        );
+    }
+
     // v3: list existing wiki pages so the agent chooses `append_wiki_page`
     // when a relevant page already exists rather than creating a
     // near-duplicate. Only shows page slugs + the frontmatter kind —
@@ -554,6 +597,18 @@ fn user_prompt(
 
     out.push_str("Decide the next actions.\n");
     out
+}
+
+/// Read `session.md` and return `(path, alt)` pairs for every
+/// `![alt](diagrams/x.svg)` reference whose file doesn't yet exist at
+/// `<session>/diagrams/<path>`. Used by the user prompt to nag the
+/// agent about unresolved diagrams until `write_diagram` is emitted.
+fn unresolved_diagram_refs(slug: &str) -> Vec<(String, String)> {
+    let md = std::fs::read_to_string(layout::session_md(slug)).unwrap_or_default();
+    crate::commands::coverage::diagram_refs_with_alt(&md)
+        .into_iter()
+        .filter(|(path, _alt)| !crate::commands::coverage::diagram_path_resolved(slug, path))
+        .collect()
 }
 
 #[derive(Debug, Clone)]
