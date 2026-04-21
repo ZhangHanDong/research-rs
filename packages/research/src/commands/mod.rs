@@ -21,3 +21,4 @@ pub mod show;
 pub mod sources;
 pub mod status;
 pub mod synthesize;
+pub mod wiki;

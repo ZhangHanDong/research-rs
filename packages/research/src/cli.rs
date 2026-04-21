@@ -217,8 +217,38 @@ pub enum Commands {
         #[arg(long = "fake-responses")]
         fake_responses: Option<String>,
     },
+    /// Inspect the per-session wiki (v3).
+    Wiki {
+        #[command(subcommand)]
+        sub: WikiCmd,
+    },
     /// Show help (alias of --help).
     Help,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WikiCmd {
+    /// List every wiki page in a session with slug, bytes, frontmatter kind.
+    List {
+        #[arg(long)]
+        slug: Option<String>,
+    },
+    /// Print one wiki page to stdout.
+    Show {
+        /// The page slug (filename without `.md`).
+        page: String,
+        #[arg(long)]
+        slug: Option<String>,
+    },
+    /// Remove a wiki page. Dry-run unless `--force` is passed.
+    Rm {
+        /// The page slug to remove.
+        page: String,
+        #[arg(long)]
+        slug: Option<String>,
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Entry point used by `main.rs`. Returns the process exit code.
@@ -359,6 +389,15 @@ fn dispatch(cmd: Commands) -> Envelope {
             dry_run,
             fake_responses.as_deref().map(split_fake_responses),
         ),
+        Commands::Wiki { sub } => match sub {
+            WikiCmd::List { slug } => commands::wiki::run_list(slug.as_deref()),
+            WikiCmd::Show { page, slug } => {
+                commands::wiki::run_show(&page, slug.as_deref())
+            }
+            WikiCmd::Rm { page, slug, force } => {
+                commands::wiki::run_rm(&page, slug.as_deref(), force)
+            }
+        },
         Commands::Help => unreachable!("Help handled in run()"),
     }
 }
