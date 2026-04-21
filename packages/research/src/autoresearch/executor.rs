@@ -981,8 +981,70 @@ fn run_batch(
 fn write_section(slug: &str, heading: &str, body: &str) -> Result<(), String> {
     let path = layout::session_md(slug);
     let md = std::fs::read_to_string(&path).map_err(|e| format!("read session.md: {e}"))?;
-    let new_md = replace_or_insert_section(&md, heading, body);
+    // v3: preserve any `![alt](diagrams/x.svg)` references the existing
+    // section body holds. Without this, an overwrite that happens to
+    // omit a reference silently orphans the SVG file and the reader
+    // loses the figure next to its explanation. Preserved refs are
+    // appended as a trailing paragraph — the agent can move them in a
+    // follow-up turn if it wants them mid-prose, but we never silently
+    // drop.
+    let body = preserve_diagram_refs(&md, heading, body);
+    let new_md = replace_or_insert_section(&md, heading, &body);
     std::fs::write(&path, new_md).map_err(|e| format!("write session.md: {e}"))
+}
+
+/// Inspect the existing body for `heading` in `md` and — if any
+/// `![alt](diagrams/x.svg)` references are present there but not in
+/// `new_body` — append them to the new body. Idempotent: if all old
+/// refs are already in the new body, returns `new_body` untouched.
+fn preserve_diagram_refs(md: &str, heading: &str, new_body: &str) -> String {
+    let Some(old_body) = extract_section_body(md, heading) else {
+        return new_body.to_string();
+    };
+    let old_refs = crate::commands::coverage::diagram_refs_with_alt(&old_body);
+    if old_refs.is_empty() {
+        return new_body.to_string();
+    }
+    let mut out = new_body.to_string();
+    let mut appended: Vec<String> = Vec::new();
+    for (path, alt) in old_refs {
+        let marker = format!("diagrams/{path}");
+        if out.contains(&marker) {
+            continue;
+        }
+        let line = if alt.is_empty() {
+            format!("![](diagrams/{path})")
+        } else {
+            format!("![{alt}](diagrams/{path})")
+        };
+        appended.push(line);
+    }
+    if !appended.is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+        for line in appended {
+            out.push_str(&line);
+            out.push_str("\n\n");
+        }
+    }
+    out
+}
+
+/// Return the body of `heading` in `md` (between this heading's
+/// trailing newline and the next `## ` heading or EOF). Returns None
+/// if the heading isn't present.
+fn extract_section_body(md: &str, heading: &str) -> Option<String> {
+    let needle = format!("{heading}\n");
+    let start = md.find(&needle)?;
+    let body_start = start + needle.len();
+    let tail = &md[body_start..];
+    let body_end = tail
+        .find("\n## ")
+        .map(|i| body_start + i + 1)
+        .unwrap_or(md.len());
+    Some(md[body_start..body_end].to_string())
 }
 
 /// v2: write (or replace) the `## Plan` block. If a plan already exists,
@@ -1357,5 +1419,51 @@ mod tests {
     fn termination_reason_str() {
         assert_eq!(TerminationReason::ReportReady.as_str(), "report_ready");
         assert_eq!(TerminationReason::Diverged.as_str(), "diverged");
+    }
+
+    #[test]
+    fn preserve_diagram_refs_keeps_existing_figure_when_overwrite_omits_it() {
+        // tokio-v3 smoke regression: Claude rewrote `## 01 · WHY`
+        // body, dropping `![control flow](diagrams/scheduler-flow.svg)`
+        // in favor of `![lifecycle](diagrams/task-lifecycle.svg)`.
+        // Old SVG became an orphan. Fix preserves missing refs by
+        // appending them to the new body.
+        let md = r"# X
+
+## 01 · WHY
+Prose explaining the scheduler.
+
+![control flow](diagrams/scheduler-flow.svg)
+
+More prose.
+
+## 02 · HOW
+body
+";
+        let new_body = "Rewritten prose, only the new figure.\n\n![lifecycle](diagrams/task-lifecycle.svg)\n";
+        let out = preserve_diagram_refs(md, "## 01 · WHY", new_body);
+        assert!(out.contains("Rewritten prose"));
+        assert!(out.contains("task-lifecycle.svg"));
+        // The previously-referenced SVG must NOT be silently dropped:
+        assert!(
+            out.contains("scheduler-flow.svg"),
+            "preserve_diagram_refs must retain the original figure, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn preserve_diagram_refs_is_idempotent_when_refs_match() {
+        let md = "## 01 · WHY\n![a](diagrams/x.svg)\n\n## 02 · NEXT\n";
+        let new_body = "New prose\n\n![a](diagrams/x.svg)\n";
+        let out = preserve_diagram_refs(md, "## 01 · WHY", new_body);
+        // Exactly one reference should survive — no duplication.
+        assert_eq!(out.matches("diagrams/x.svg").count(), 1);
+    }
+
+    #[test]
+    fn preserve_diagram_refs_noop_when_heading_absent() {
+        let md = "## Overview\nbody\n";
+        let out = preserve_diagram_refs(md, "## 01 · NEW", "fresh");
+        assert_eq!(out, "fresh");
     }
 }
