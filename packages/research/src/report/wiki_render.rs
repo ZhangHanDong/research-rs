@@ -49,6 +49,33 @@ pub fn render_wiki(slug: &str, session_dir: &Path) -> Result<WikiRender, RenderE
     let mut broken_links: u32 = 0;
     out.push_str(r#"<section class="wiki-root"><h2><span class="section-num">WIKI</span><span>Entity & concept pages</span></h2>"#);
 
+    // Table of contents — one pill per page, grouped by kind, with
+    // anchor links to the per-page section below. Browsable without
+    // scrolling through the whole report.
+    let mut toc_entries: Vec<(String, Option<String>, Option<String>)> = Vec::with_capacity(page_slugs.len());
+    for page_slug in &page_slugs {
+        if let Ok(body) = wiki::read_page(slug, page_slug) {
+            let (fm, _rest) = wiki::split_frontmatter(&body);
+            toc_entries.push((page_slug.clone(), fm.kind.clone(), fm.updated.clone()));
+        } else {
+            toc_entries.push((page_slug.clone(), None, None));
+        }
+    }
+    out.push_str(r#"<nav class="wiki-toc" id="wiki-toc-anchor" aria-label="wiki pages"><p class="wiki-toc-label">"#);
+    out.push_str(&format!("{} pages · click to jump", toc_entries.len()));
+    out.push_str(r#"</p><ul>"#);
+    for (page_slug, kind, updated) in &toc_entries {
+        let kind_tag = kind.as_deref().unwrap_or("page");
+        let updated_tag = match updated {
+            Some(u) => format!(r#"<span class="wiki-toc-updated">{u}</span>"#),
+            None => String::new(),
+        };
+        out.push_str(&format!(
+            r##"<li><a href="#wiki-{page_slug}"><span class="wiki-toc-kind">{kind_tag}</span><span class="wiki-toc-name">{page_slug}</span>{updated_tag}</a></li>"##
+        ));
+    }
+    out.push_str("</ul></nav>");
+
     for page_slug in &page_slugs {
         let body = match wiki::read_page(slug, page_slug) {
             Ok(b) => b,
@@ -66,7 +93,7 @@ pub fn render_wiki(slug: &str, session_dir: &Path) -> Result<WikiRender, RenderE
         let with_links = rewrite_wiki_links(&rendered.body_html, &page_set, &mut broken_links);
         let title = extract_title(&rendered.body_html).unwrap_or_else(|| page_slug.clone());
         out.push_str(&format!(
-            r#"<section class="wiki-page" id="wiki-{page_slug}"><h3>{title}</h3>"#
+            r##"<section class="wiki-page" id="wiki-{page_slug}"><h3>{title} <a class="wiki-page-back" href="#wiki-toc-anchor" aria-label="back to wiki index">↑ index</a></h3>"##
         ));
         out.push_str(&with_links);
         out.push_str("</section>");
@@ -153,5 +180,18 @@ mod tests {
     #[test]
     fn extract_title_none_when_no_h1() {
         assert!(extract_title("<p>no heading</p>").is_none());
+    }
+
+    #[test]
+    fn rewrite_preserves_existing_anchors_untouched() {
+        let set: HashSet<&str> = HashSet::new();
+        let mut broken = 0u32;
+        // Sanity: non-wiki-link anchors in the rendered HTML (e.g. a
+        // markdown heading's auto-id) must survive the rewrite pass
+        // untouched so "↑ index" back-links keep working.
+        let html = r##"<a href="#wiki-toc-anchor">top</a>"##;
+        let out = rewrite_wiki_links(html, &set, &mut broken);
+        assert_eq!(out, html);
+        assert_eq!(broken, 0);
     }
 }

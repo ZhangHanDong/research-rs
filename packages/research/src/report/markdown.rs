@@ -258,7 +258,16 @@ fn inline_diagrams(
                 }
             }
             DiagramResolve::TooLarge | DiagramResolve::Missing | DiagramResolve::NotSvg => {
-                out.push_str(full.as_str());
+                // Author referenced `diagrams/<path>.svg` but no file
+                // was written (or it was invalid / oversize). Rather
+                // than leaving a broken-image `<img>` in the HTML, emit
+                // a styled placeholder so the report stays readable and
+                // the gap is obvious.
+                let fname = src.strip_prefix("diagrams/").unwrap_or(src);
+                let label = if alt.is_empty() { fname } else { alt };
+                out.push_str(&format!(
+                    r#"<div class="diagram diagram-missing"><p class="diagram-missing-label">diagram pending</p><p class="caption">{label} — <code>{src}</code></p></div>"#
+                ));
                 warnings.push("diagram_fallback_img".into());
             }
         }
@@ -419,13 +428,18 @@ mod tests {
     }
 
     #[test]
-    fn diagram_missing_falls_back_to_img() {
+    fn diagram_missing_renders_placeholder() {
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("diagrams")).unwrap();
         let md = "## Overview\nx\n\n![missing](diagrams/nope.svg)\n";
         let r = render_body(md, tmp.path()).unwrap();
         assert_eq!(r.diagrams_inlined, 0);
-        assert!(r.body_html.contains("<img src=\"diagrams/nope.svg\""));
+        // Do NOT leave a broken <img> tag — that renders a broken-
+        // image icon in the browser. Emit a styled placeholder and
+        // keep the warning so callers can surface it.
+        assert!(!r.body_html.contains("<img src=\"diagrams/nope.svg\""));
+        assert!(r.body_html.contains(r#"class="diagram diagram-missing""#));
+        assert!(r.body_html.contains("diagram pending"));
         assert!(r.warnings.iter().any(|w| w == "diagram_fallback_img"));
     }
 
