@@ -115,10 +115,38 @@ pub fn extract_http_links(md: &str, exclude_sources_block: bool) -> Vec<String> 
         // Look for "](http" which is the start of a markdown-link URL.
         if bytes[i] == b']' && i + 1 < bytes.len() && bytes[i + 1] == b'(' {
             let start = i + 2;
-            // Find matching `)`
-            if let Some(end_rel) = scanned[start..].find(')') {
-                let url = &scanned[start..start + end_rel];
-                let url = url.trim();
+            // Match the closing `)` that balances the opening `(`, so URLs
+            // like `https://en.wikipedia.org/wiki/Function_(mathematics)`
+            // survive instead of getting truncated at the first `)`. A
+            // markdown link may optionally carry a " title" after the URL
+            // (e.g. `[t](url "cap")`); we stop on the first unquoted space
+            // outside nested parens.
+            let tail = &scanned[start..];
+            let mut depth: i32 = 1;
+            let mut in_quotes: Option<u8> = None;
+            let mut end_rel: Option<usize> = None;
+            let tail_bytes = tail.as_bytes();
+            for (k, &b) in tail_bytes.iter().enumerate() {
+                match (b, in_quotes) {
+                    (b'"', None) => in_quotes = Some(b'"'),
+                    (b'\'', None) => in_quotes = Some(b'\''),
+                    (q, Some(open)) if q == open => in_quotes = None,
+                    (b'(', None) => depth += 1,
+                    (b')', None) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end_rel = Some(k);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(end_rel) = end_rel {
+                let raw = &scanned[start..start + end_rel];
+                // Split off optional `"title"` / `'title'` portion.
+                let url_part = raw.trim().split_whitespace().next().unwrap_or(raw.trim());
+                let url = url_part.trim();
                 if url.starts_with("http://") || url.starts_with("https://") {
                     if seen.insert(url.to_string()) {
                         out.push(url.to_string());
@@ -278,5 +306,32 @@ Long notes here.
         // a markdown link syntactically, so it stays out. But anything like
         // [a](url) inside the block would be caught.
         assert!(with.iter().any(|u| u == "https://real.test"));
+    }
+
+    #[test]
+    fn extract_http_links_preserves_urls_with_parens() {
+        let md = "See [wiki](https://en.wikipedia.org/wiki/Function_(mathematics)) for details.";
+        let links = extract_http_links(md, false);
+        assert_eq!(
+            links,
+            vec!["https://en.wikipedia.org/wiki/Function_(mathematics)".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_http_links_handles_title_attribute() {
+        let md = r#"Check [x](https://example.com/path "the title") here."#;
+        let links = extract_http_links(md, false);
+        assert_eq!(links, vec!["https://example.com/path".to_string()]);
+    }
+
+    #[test]
+    fn extract_http_links_handles_nested_parens_with_title() {
+        let md = r#"See [y](https://en.wikipedia.org/wiki/Rust_(programming_language) "Rust lang")."#;
+        let links = extract_http_links(md, false);
+        assert_eq!(
+            links,
+            vec!["https://en.wikipedia.org/wiki/Rust_(programming_language)".to_string()]
+        );
     }
 }

@@ -206,7 +206,14 @@ fn diagram_ref_paths(md: &str) -> Vec<String> {
 fn diagram_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"!\[[^\]]*\]\((diagrams/[^)\s]+\.svg)\)").expect("diagram regex")
+        // Match `![...](diagrams/foo.svg)` variants:
+        //   - case-insensitive `.svg` / `.SVG`
+        //   - optional markdown title: `![t](diagrams/x.svg "caption")`
+        // Mirrors what the markdown renderer already accepts — the two
+        // layers must agree or `diagrams_referenced` drifts below what
+        // the rendered report actually shows.
+        Regex::new(r#"(?i)!\[[^\]]*\]\((diagrams/[^)\s]+\.svg)(?:\s+"[^"]*")?\)"#)
+            .expect("diagram regex")
     })
 }
 
@@ -241,5 +248,23 @@ mod tests {
     fn diagram_re_ignores_non_local_image() {
         let md = "![logo](https://example.com/pic.png) ![x](../../escape.svg)";
         assert!(diagram_ref_paths(md).is_empty());
+    }
+
+    #[test]
+    fn diagram_re_accepts_uppercase_svg_extension() {
+        let md = "![fig](diagrams/ARCH.SVG)";
+        assert_eq!(diagram_ref_paths(md), vec!["ARCH.SVG"]);
+    }
+
+    #[test]
+    fn diagram_re_accepts_mixed_case_svg_extension() {
+        let md = "![fig](diagrams/axis.Svg)";
+        assert_eq!(diagram_ref_paths(md), vec!["axis.Svg"]);
+    }
+
+    #[test]
+    fn diagram_re_accepts_optional_title_attribute() {
+        let md = r#"![fig](diagrams/axis.svg "a caption")"#;
+        assert_eq!(diagram_ref_paths(md), vec!["axis.svg"]);
     }
 }
