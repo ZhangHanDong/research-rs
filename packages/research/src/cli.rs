@@ -82,6 +82,33 @@ pub enum Commands {
         #[arg(long = "on-short-body")]
         on_short_body: Option<String>,
     },
+    /// Bulk-ingest a local file or directory tree as sources.
+    ///
+    /// Walks the path, applies optional --glob include/exclude patterns
+    /// (prefix with `!` to exclude), enforces per-file and per-walk size
+    /// caps, and attaches each accepted file as its own source via the
+    /// same pipeline as `research add file:///...`.
+    #[command(name = "add-local")]
+    AddLocal {
+        /// File or directory to ingest. Accepts `file://`, absolute,
+        /// relative (./x), home-relative (~/x), or bare path.
+        path: String,
+        #[arg(long)]
+        slug: Option<String>,
+        /// Glob pattern (repeatable). Prefix with `!` to exclude.
+        /// Examples: `--glob '**/*.rs'  --glob '!**/test/**'`.
+        /// If omitted, matches all files.
+        #[arg(long = "glob", action = clap::ArgAction::Append)]
+        glob: Vec<String>,
+        /// Per-file cap in bytes. Files over this are skipped with a
+        /// `too_large` reason. Default 256 KiB.
+        #[arg(long = "max-file-bytes")]
+        max_file_bytes: Option<u64>,
+        /// Total cap for the whole walk. Walk stops (not truncates)
+        /// when this would be exceeded. Default 2 MiB.
+        #[arg(long = "max-total-bytes")]
+        max_total_bytes: Option<u64>,
+    },
     /// List sources attached to the current or given session.
     Sources {
         slug: Option<String>,
@@ -259,6 +286,19 @@ fn dispatch(cmd: Commands) -> Envelope {
             no_readable,
             min_bytes,
             on_short_body.as_deref(),
+        ),
+        Commands::AddLocal {
+            path,
+            slug,
+            glob,
+            max_file_bytes,
+            max_total_bytes,
+        } => commands::add_local::run(
+            &path,
+            slug.as_deref(),
+            &glob,
+            max_file_bytes,
+            max_total_bytes,
         ),
         Commands::Sources { slug, rejected } => {
             commands::sources::run(slug.as_deref(), rejected)

@@ -3,6 +3,7 @@
 //! Real logic lands in subsequent specs.
 
 pub mod add;
+pub mod add_local;
 pub mod batch;
 pub mod close;
 pub mod coverage;
