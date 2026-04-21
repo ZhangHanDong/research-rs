@@ -357,6 +357,9 @@ Valid action shapes (each is an object with a "type" field):
   { "type": "write_plan", "body": "Goal: …\nSources: arxiv+github+HN\nMilestones: iter 2 → fetch; iter 4 → draft" }
   { "type": "write_diagram", "path": "axis.svg", "alt": "philosophy axis",
     "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 920 380\">…</svg>" }
+  { "type": "write_wiki_page", "slug": "scheduler", "body": "---\nkind: concept\nsources: [https://...]\n---\n# Scheduler\n..." }
+  { "type": "write_wiki_page", "slug": "scheduler", "body": "...", "replace": true }
+  { "type": "append_wiki_page", "slug": "scheduler", "body": "new finding from iter 5..." }
 
 Rules:
 - "batch" requires a JSON array of URL strings named "urls" (plural). Even
@@ -403,6 +406,21 @@ Workflow: plan → fetch → digest + write → mark diagrams.
 - `into_section` must match the `heading` of a WriteSection you just
   wrote (or an existing section). Use this to link the source to its
   landing place in the narrative.
+
+Wiki pages (v3, optional). When a topic has durable entities or
+concepts worth a dedicated page — a library component, a protocol, a
+named framework — prefer `write_wiki_page` over squeezing everything
+into a numbered section. Page slug is `[a-z0-9_-]{1,64}`. Add
+frontmatter:
+  ---
+  kind: concept | entity | source-summary | comparison
+  sources: [https://...]
+  related: [other-slug]
+  ---
+- Use `append_wiki_page` for incremental findings on an existing page;
+  don't re-emit `write_wiki_page` with the full body each iteration.
+- Link between pages with `[[slug]]` — the renderer resolves these to
+  the local page on build.
 
 Source diversity. The CLI routes these kinds efficiently without a browser:
   - arxiv.org/abs/{id}                          → paper abstract (fast)
@@ -604,6 +622,74 @@ fn dispatch_action(
         Action::WriteDiagram { path, alt, svg } => {
             write_diagram(slug, iteration, path, alt, svg)
         }
+        Action::WriteWikiPage { slug: page_slug, body, replace } => {
+            write_wiki_page(slug, iteration, page_slug, body, *replace)
+        }
+        Action::AppendWikiPage { slug: page_slug, body } => {
+            append_wiki_page(slug, iteration, page_slug, body)
+        }
+    }
+}
+
+fn write_wiki_page(
+    session_slug: &str,
+    iteration: u32,
+    page_slug: &str,
+    body: &str,
+    replace: bool,
+) -> Result<(), String> {
+    use crate::session::wiki;
+    let result = if replace {
+        wiki::replace_page(session_slug, page_slug, body).map(|_| "replace")
+    } else {
+        wiki::create_page(session_slug, page_slug, body).map(|_| "create")
+    };
+    match result {
+        Ok(mode) => {
+            let _ = log::append(
+                session_slug,
+                &SessionEvent::WikiPageWritten {
+                    timestamp: Utc::now(),
+                    iteration,
+                    slug: page_slug.to_string(),
+                    mode: mode.to_string(),
+                    body_chars: body.chars().count() as u32,
+                    note: None,
+                },
+            );
+            Ok(())
+        }
+        Err(wiki::WikiError::AlreadyExists(_)) => Err(format!(
+            "wiki_page_exists: '{page_slug}' exists — set replace:true or use append_wiki_page"
+        )),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn append_wiki_page(
+    session_slug: &str,
+    iteration: u32,
+    page_slug: &str,
+    body: &str,
+) -> Result<(), String> {
+    use crate::session::wiki;
+    let stamp = Utc::now().format("%Y-%m-%d").to_string();
+    match wiki::append_page(session_slug, page_slug, body, &stamp) {
+        Ok(_) => {
+            let _ = log::append(
+                session_slug,
+                &SessionEvent::WikiPageWritten {
+                    timestamp: Utc::now(),
+                    iteration,
+                    slug: page_slug.to_string(),
+                    mode: "append".to_string(),
+                    body_chars: body.chars().count() as u32,
+                    note: None,
+                },
+            );
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
     }
 }
 

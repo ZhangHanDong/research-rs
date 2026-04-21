@@ -70,25 +70,14 @@ pub fn validate_slug(slug: &str) -> Result<(), WikiError> {
 /// Create a new wiki page. Errors if the page already exists — use
 /// `replace_page` to overwrite.
 pub fn create_page(session_slug: &str, page_slug: &str, body: &str) -> Result<PathBuf, WikiError> {
-    validate_slug(page_slug)?;
-    let path = layout::session_wiki_page(session_slug, page_slug);
-    if path.exists() {
-        return Err(WikiError::AlreadyExists(page_slug.to_string()));
-    }
-    ensure_wiki_dir(session_slug)?;
-    fs::write(&path, body).map_err(|e| WikiError::Io(format!("write {page_slug}: {e}")))?;
-    Ok(path)
+    create_page_in(&layout::session_wiki_dir(session_slug), page_slug, body)
 }
 
 /// Replace a wiki page's contents. Creates the page if missing —
 /// callers that want a create-vs-replace distinction should check
 /// existence first.
 pub fn replace_page(session_slug: &str, page_slug: &str, body: &str) -> Result<PathBuf, WikiError> {
-    validate_slug(page_slug)?;
-    ensure_wiki_dir(session_slug)?;
-    let path = layout::session_wiki_page(session_slug, page_slug);
-    fs::write(&path, body).map_err(|e| WikiError::Io(format!("write {page_slug}: {e}")))?;
-    Ok(path)
+    replace_page_in(&layout::session_wiki_dir(session_slug), page_slug, body)
 }
 
 /// Append `body` to a wiki page, preceded by a `<!-- YYYY-MM-DD -->`
@@ -100,9 +89,66 @@ pub fn append_page(
     body: &str,
     stamp: &str,
 ) -> Result<PathBuf, WikiError> {
+    append_page_in(&layout::session_wiki_dir(session_slug), page_slug, body, stamp)
+}
+
+/// Read a wiki page. NotFound when the file is missing.
+pub fn read_page(session_slug: &str, page_slug: &str) -> Result<String, WikiError> {
+    read_page_in(&layout::session_wiki_dir(session_slug), page_slug)
+}
+
+/// Remove a wiki page. NotFound if missing.
+pub fn remove_page(session_slug: &str, page_slug: &str) -> Result<PathBuf, WikiError> {
+    remove_page_in(&layout::session_wiki_dir(session_slug), page_slug)
+}
+
+/// List all wiki page slugs (alphabetically sorted). Missing wiki/
+/// returns an empty vec rather than an error so newborn sessions Just Work.
+pub fn list_pages(session_slug: &str) -> Vec<String> {
+    list_pages_in(&layout::session_wiki_dir(session_slug))
+}
+
+// ── `_in` variants: operate on an explicit wiki directory path ───────
+// These power the session-slug wrappers above AND are directly testable
+// without touching any env var / global state. Public so tests (and any
+// future "query an arbitrary wiki root" flow) can use them.
+
+pub fn create_page_in(
+    wiki_dir: &std::path::Path,
+    page_slug: &str,
+    body: &str,
+) -> Result<PathBuf, WikiError> {
     validate_slug(page_slug)?;
-    ensure_wiki_dir(session_slug)?;
-    let path = layout::session_wiki_page(session_slug, page_slug);
+    let path = wiki_dir.join(format!("{page_slug}.md"));
+    if path.exists() {
+        return Err(WikiError::AlreadyExists(page_slug.to_string()));
+    }
+    fs::create_dir_all(wiki_dir).map_err(|e| WikiError::Io(format!("mkdir wiki/: {e}")))?;
+    fs::write(&path, body).map_err(|e| WikiError::Io(format!("write {page_slug}: {e}")))?;
+    Ok(path)
+}
+
+pub fn replace_page_in(
+    wiki_dir: &std::path::Path,
+    page_slug: &str,
+    body: &str,
+) -> Result<PathBuf, WikiError> {
+    validate_slug(page_slug)?;
+    fs::create_dir_all(wiki_dir).map_err(|e| WikiError::Io(format!("mkdir wiki/: {e}")))?;
+    let path = wiki_dir.join(format!("{page_slug}.md"));
+    fs::write(&path, body).map_err(|e| WikiError::Io(format!("write {page_slug}: {e}")))?;
+    Ok(path)
+}
+
+pub fn append_page_in(
+    wiki_dir: &std::path::Path,
+    page_slug: &str,
+    body: &str,
+    stamp: &str,
+) -> Result<PathBuf, WikiError> {
+    validate_slug(page_slug)?;
+    fs::create_dir_all(wiki_dir).map_err(|e| WikiError::Io(format!("mkdir wiki/: {e}")))?;
+    let path = wiki_dir.join(format!("{page_slug}.md"));
     let prior = fs::read_to_string(&path).unwrap_or_default();
     let sep = if prior.trim().is_empty() { "" } else { "\n\n" };
     let block = format!("{prior}{sep}<!-- appended {stamp} -->\n{body}");
@@ -111,20 +157,21 @@ pub fn append_page(
     Ok(path)
 }
 
-/// Read a wiki page. NotFound when the file is missing.
-pub fn read_page(session_slug: &str, page_slug: &str) -> Result<String, WikiError> {
+pub fn read_page_in(wiki_dir: &std::path::Path, page_slug: &str) -> Result<String, WikiError> {
     validate_slug(page_slug)?;
-    let path = layout::session_wiki_page(session_slug, page_slug);
+    let path = wiki_dir.join(format!("{page_slug}.md"));
     fs::read_to_string(&path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => WikiError::NotFound(page_slug.to_string()),
         _ => WikiError::Io(e.to_string()),
     })
 }
 
-/// Remove a wiki page. NotFound if missing.
-pub fn remove_page(session_slug: &str, page_slug: &str) -> Result<PathBuf, WikiError> {
+pub fn remove_page_in(
+    wiki_dir: &std::path::Path,
+    page_slug: &str,
+) -> Result<PathBuf, WikiError> {
     validate_slug(page_slug)?;
-    let path = layout::session_wiki_page(session_slug, page_slug);
+    let path = wiki_dir.join(format!("{page_slug}.md"));
     if !path.exists() {
         return Err(WikiError::NotFound(page_slug.to_string()));
     }
@@ -132,11 +179,8 @@ pub fn remove_page(session_slug: &str, page_slug: &str) -> Result<PathBuf, WikiE
     Ok(path)
 }
 
-/// List all wiki page slugs (alphabetically sorted). Missing wiki/
-/// returns an empty vec rather than an error so newborn sessions Just Work.
-pub fn list_pages(session_slug: &str) -> Vec<String> {
-    let dir = layout::session_wiki_dir(session_slug);
-    let Ok(entries) = fs::read_dir(&dir) else {
+pub fn list_pages_in(wiki_dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(wiki_dir) else {
         return Vec::new();
     };
     let mut out: Vec<String> = entries
@@ -151,11 +195,6 @@ pub fn list_pages(session_slug: &str) -> Vec<String> {
         .collect();
     out.sort();
     out
-}
-
-fn ensure_wiki_dir(session_slug: &str) -> Result<(), WikiError> {
-    let dir = layout::session_wiki_dir(session_slug);
-    fs::create_dir_all(&dir).map_err(|e| WikiError::Io(format!("mkdir wiki/: {e}")))
 }
 
 // ── Frontmatter ─────────────────────────────────────────────────────────────
@@ -268,22 +307,12 @@ fn parse_yaml_list(val: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    // Isolated session dir via ACTIONBOOK_RESEARCH_HOME env override.
-    fn with_tmp_session<F: FnOnce(&str)>(f: F) {
-        use std::sync::{Mutex, OnceLock};
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-
-        let tmp = tempfile::tempdir().unwrap();
-        let prev = std::env::var("ACTIONBOOK_RESEARCH_HOME").ok();
-        unsafe { std::env::set_var("ACTIONBOOK_RESEARCH_HOME", tmp.path()) };
-        let slug = "wiki-unit";
-        std::fs::create_dir_all(tmp.path().join(slug)).unwrap();
-        f(slug);
-        match prev {
-            Some(v) => unsafe { std::env::set_var("ACTIONBOOK_RESEARCH_HOME", v) },
-            None => unsafe { std::env::remove_var("ACTIONBOOK_RESEARCH_HOME") },
-        }
+    // Each wiki test uses a private tempdir whose path is passed to the
+    // wiki function's `_at` variant. This avoids the ACTIONBOOK_RESEARCH_
+    // HOME env var entirely, so these tests are safe to run in parallel
+    // with any other test that touches that variable.
+    fn tmp_wiki_dir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     // Slug validation
@@ -308,81 +337,73 @@ mod tests {
 
     #[test]
     fn create_then_read() {
-        with_tmp_session(|slug| {
-            let p = create_page(slug, "scheduler", "# Scheduler\nBody.").unwrap();
-            assert!(p.exists());
-            let got = read_page(slug, "scheduler").unwrap();
-            assert!(got.contains("# Scheduler"));
-        });
+        let tmp = tmp_wiki_dir();
+        let p = create_page_in(tmp.path(), "scheduler", "# Scheduler\nBody.").unwrap();
+        assert!(p.exists());
+        let got = read_page_in(tmp.path(), "scheduler").unwrap();
+        assert!(got.contains("# Scheduler"));
     }
 
     #[test]
     fn create_twice_fails() {
-        with_tmp_session(|slug| {
-            create_page(slug, "x", "a").unwrap();
-            match create_page(slug, "x", "b") {
-                Err(WikiError::AlreadyExists(_)) => {}
-                other => panic!("expected AlreadyExists, got {other:?}"),
-            }
-        });
+        let tmp = tmp_wiki_dir();
+        create_page_in(tmp.path(), "x", "a").unwrap();
+        match create_page_in(tmp.path(), "x", "b") {
+            Err(WikiError::AlreadyExists(_)) => {}
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
     }
 
     #[test]
     fn replace_overwrites() {
-        with_tmp_session(|slug| {
-            replace_page(slug, "x", "first").unwrap();
-            replace_page(slug, "x", "second").unwrap();
-            assert_eq!(read_page(slug, "x").unwrap(), "second");
-        });
+        let tmp = tmp_wiki_dir();
+        replace_page_in(tmp.path(), "x", "first").unwrap();
+        replace_page_in(tmp.path(), "x", "second").unwrap();
+        assert_eq!(read_page_in(tmp.path(), "x").unwrap(), "second");
     }
 
     #[test]
     fn append_preserves_prior_content() {
-        with_tmp_session(|slug| {
-            create_page(slug, "x", "original body").unwrap();
-            append_page(slug, "x", "new paragraph", "2026-04-21").unwrap();
-            let got = read_page(slug, "x").unwrap();
-            assert!(got.contains("original body"));
-            assert!(got.contains("appended 2026-04-21"));
-            assert!(got.contains("new paragraph"));
-        });
+        let tmp = tmp_wiki_dir();
+        create_page_in(tmp.path(), "x", "original body").unwrap();
+        append_page_in(tmp.path(), "x", "new paragraph", "2026-04-21").unwrap();
+        let got = read_page_in(tmp.path(), "x").unwrap();
+        assert!(got.contains("original body"));
+        assert!(got.contains("appended 2026-04-21"));
+        assert!(got.contains("new paragraph"));
     }
 
     #[test]
     fn append_creates_when_missing() {
-        with_tmp_session(|slug| {
-            append_page(slug, "brand-new", "first line", "2026-04-21").unwrap();
-            let got = read_page(slug, "brand-new").unwrap();
-            assert!(got.contains("appended 2026-04-21"));
-            assert!(got.contains("first line"));
-        });
+        let tmp = tmp_wiki_dir();
+        append_page_in(tmp.path(), "brand-new", "first line", "2026-04-21").unwrap();
+        let got = read_page_in(tmp.path(), "brand-new").unwrap();
+        assert!(got.contains("appended 2026-04-21"));
+        assert!(got.contains("first line"));
     }
 
     #[test]
     fn remove_works_and_reports_missing() {
-        with_tmp_session(|slug| {
-            create_page(slug, "x", "body").unwrap();
-            remove_page(slug, "x").unwrap();
-            assert!(matches!(read_page(slug, "x"), Err(WikiError::NotFound(_))));
-            assert!(matches!(remove_page(slug, "x"), Err(WikiError::NotFound(_))));
-        });
+        let tmp = tmp_wiki_dir();
+        create_page_in(tmp.path(), "x", "body").unwrap();
+        remove_page_in(tmp.path(), "x").unwrap();
+        assert!(matches!(read_page_in(tmp.path(), "x"), Err(WikiError::NotFound(_))));
+        assert!(matches!(remove_page_in(tmp.path(), "x"), Err(WikiError::NotFound(_))));
     }
 
     #[test]
     fn list_returns_sorted_slugs() {
-        with_tmp_session(|slug| {
-            for name in ["beta", "alpha", "gamma"] {
-                create_page(slug, name, "x").unwrap();
-            }
-            assert_eq!(list_pages(slug), vec!["alpha", "beta", "gamma"]);
-        });
+        let tmp = tmp_wiki_dir();
+        for name in ["beta", "alpha", "gamma"] {
+            create_page_in(tmp.path(), name, "x").unwrap();
+        }
+        assert_eq!(list_pages_in(tmp.path()), vec!["alpha", "beta", "gamma"]);
     }
 
     #[test]
     fn list_on_missing_dir_returns_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("ACTIONBOOK_RESEARCH_HOME", tmp.path()) };
-        assert!(list_pages("nonexistent").is_empty());
+        let missing = std::path::Path::new("/tmp/never-existed-wiki-xyz-abc");
+        assert!(list_pages_in(missing).is_empty());
     }
 
     // Frontmatter

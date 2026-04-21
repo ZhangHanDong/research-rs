@@ -186,6 +186,20 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+
+    /// v3: a wiki page was created, replaced, or appended to via
+    /// `WriteWikiPage` / `AppendWikiPage`. `mode` is "create" | "replace"
+    /// | "append". `body_chars` helps coverage judge page size without
+    /// reading the file.
+    WikiPageWritten {
+        timestamp: DateTime<Utc>,
+        iteration: u32,
+        slug: String,
+        mode: String,
+        body_chars: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
