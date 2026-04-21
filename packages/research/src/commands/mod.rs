@@ -23,3 +23,4 @@ pub mod sources;
 pub mod status;
 pub mod synthesize;
 pub mod wiki;
+pub mod wiki_query;

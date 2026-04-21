@@ -269,6 +269,23 @@ pub enum WikiCmd {
         #[arg(long)]
         force: bool,
     },
+    /// Ask a question over the session's wiki; optionally save answer
+    /// as a `kind: analysis` page via `--save-as <slug>`.
+    Query {
+        /// The question to ask.
+        question: String,
+        #[arg(long)]
+        slug: Option<String>,
+        /// Save the answer as `wiki/<slug>.md` with `kind: analysis`.
+        #[arg(long = "save-as")]
+        save_as: Option<String>,
+        /// Answer shape: prose (default) | comparison | table.
+        #[arg(long)]
+        format: Option<String>,
+        /// LLM provider: fake | claude | codex.
+        #[arg(long, default_value = "claude")]
+        provider: String,
+    },
 }
 
 /// Entry point used by `main.rs`. Returns the process exit code.
@@ -416,6 +433,15 @@ fn dispatch(cmd: Commands) -> Envelope {
             }
             WikiCmd::Rm { page, slug, force } => {
                 commands::wiki::run_rm(&page, slug.as_deref(), force)
+            }
+            WikiCmd::Query { question, slug, save_as, format, provider } => {
+                commands::wiki_query::run(
+                    &question,
+                    slug.as_deref(),
+                    save_as.as_deref(),
+                    format.as_deref(),
+                    &provider,
+                )
             }
         },
         Commands::Schema { sub } => match sub {

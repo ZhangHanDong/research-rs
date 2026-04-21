@@ -213,6 +213,22 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+
+    /// v3: `research wiki query <question>` ran. `relevant_pages` is the
+    /// slug list chosen by the retrieval step; `answer_slug` is set iff
+    /// `--save-as <slug>` persisted the answer as a new wiki page. The
+    /// event is output-only (it doesn't block coverage) and surfaces in
+    /// `research status` as "queries asked."
+    WikiQuery {
+        timestamp: DateTime<Utc>,
+        question: String,
+        relevant_pages: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer_slug: Option<String>,
+        answer_chars: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
