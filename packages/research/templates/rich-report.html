@@ -203,6 +203,38 @@
       margin-top: 4rem;
     }
 
+    /* v3: wiki pages — one .wiki-page per entity / concept / source
+       summary. Grouped under .wiki-root between the numbered sections
+       and Sources. */
+    .wiki-root {
+      margin-top: 3rem;
+      padding-top: 1.6rem;
+      border-top: 1px solid var(--color-rule);
+    }
+    .wiki-root > h2 { margin-top: 0; }
+    .wiki-page {
+      margin: 1.6rem 0 2rem;
+      padding-left: 1rem;
+      border-left: 2px solid var(--color-rule);
+    }
+    .wiki-page > h3 {
+      font-family: var(--font-serif);
+      font-size: 1.25rem;
+      margin: 0 0 0.4rem;
+    }
+    .wiki-link {
+      text-decoration: none;
+      border-bottom: 1px dotted var(--color-accent);
+    }
+    .wiki-broken {
+      color: var(--color-accent);
+      background: rgba(247,89,31,0.08);
+      padding: 0 3px;
+      border-radius: 3px;
+      font-family: var(--font-mono);
+      font-size: 0.82em;
+    }
+
     /* Bilingual toggle — default hides .tr-zh; clicking 中文 reveals
        each Chinese paragraph directly below its English sibling. */
     .lang-switch {

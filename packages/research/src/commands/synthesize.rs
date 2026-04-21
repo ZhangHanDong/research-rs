@@ -11,6 +11,7 @@ use crate::report::builder::{self, BuildError, ReportInput};
 use crate::report::markdown::{self, RenderError};
 use crate::report::sources;
 use crate::report::template::{self, Slots};
+use crate::report::wiki_render;
 use crate::session::{
     active, config,
     event::{SessionEvent, SynthesizeStage},
@@ -230,8 +231,26 @@ fn render_rich_html(
     let mut warnings = rendered.warnings.clone();
     warnings.extend(sources_section.warnings.iter().cloned());
 
+    // v3: render wiki pages between the numbered sections and Sources.
+    let wiki = wiki_render::render_wiki(slug, &session_dir).map_err(|e| match e {
+        RenderError::DiagramOutOfBounds(p) => format!(
+            "diagram_out_of_bounds (in wiki page): '{}' resolves outside session_dir/diagrams/",
+            p.display()
+        ),
+    })?;
+    warnings.extend(wiki.warnings.iter().cloned());
+    if wiki.broken_links > 0 {
+        warnings.push(format!("broken_wiki_links: {} — see coverage", wiki.broken_links));
+    }
+
+    let combined_body = if wiki.page_count == 0 {
+        rendered.body_html.clone()
+    } else {
+        format!("{}\n{}", rendered.body_html, wiki.html)
+    };
+
     let body_html = if bilingual {
-        match crate::report::bilingual::inject_zh_translations(&rendered.body_html) {
+        match crate::report::bilingual::inject_zh_translations(&combined_body) {
             Ok((augmented, note)) => {
                 if let Some(n) = note {
                     warnings.push(n);
@@ -240,11 +259,11 @@ fn render_rich_html(
             }
             Err(e) => {
                 warnings.push(format!("bilingual_skipped: {e}"));
-                rendered.body_html.clone()
+                combined_body.clone()
             }
         }
     } else {
-        rendered.body_html.clone()
+        combined_body
     };
 
     let tags_str = if tags.is_empty() {
