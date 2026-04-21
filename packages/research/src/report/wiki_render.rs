@@ -85,10 +85,11 @@ pub fn render_wiki(slug: &str, session_dir: &Path) -> Result<WikiRender, RenderE
             }
         };
         let (_fm, rest) = wiki::split_frontmatter(&body);
-        // Render the body via the shared markdown pipeline so any
-        // `![...](diagrams/x.svg)` inside a wiki page inlines exactly
-        // like it would in a numbered section.
-        let rendered = markdown::render_body(rest, session_dir)?;
+        // Render via the wiki-specific pipeline — plain markdown + diagram
+        // inline. Using `render_body` here drops the whole body because
+        // its `strip_scaffolding` step skips everything before `##
+        // Overview`, which wiki pages don't have.
+        let rendered = markdown::render_wiki_page(rest, session_dir)?;
         warnings.extend(rendered.warnings.iter().cloned());
         let with_links = rewrite_wiki_links(&rendered.body_html, &page_set, &mut broken_links);
         let title = extract_title(&rendered.body_html).unwrap_or_else(|| page_slug.clone());

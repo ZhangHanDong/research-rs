@@ -83,6 +83,26 @@ pub fn render_body(md: &str, session_dir: &Path) -> Result<RenderResult, RenderE
     })
 }
 
+/// Render a wiki-page body: markdown → HTML with diagram inlining, but
+/// **without** the session.md-oriented scaffolding strip, aside
+/// extraction, or section-number styling. Wiki pages start with `# Slug`
+/// plus flowing prose — they have no `## Overview` sentinel to anchor
+/// `strip_scaffolding` on, and feeding them through `render_body` would
+/// drop their entire body.
+pub fn render_wiki_page(
+    md: &str,
+    session_dir: &Path,
+) -> Result<RenderResult, RenderError> {
+    let html = markdown_to_html(md);
+    let (html, diagrams_inlined, warnings) = inline_diagrams(&html, session_dir)?;
+    Ok(RenderResult {
+        body_html: html,
+        aside_html: String::new(),
+        diagrams_inlined,
+        warnings,
+    })
+}
+
 fn markdown_to_html(md: &str) -> String {
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let parser = Parser::new_ext(md, opts);
@@ -425,6 +445,20 @@ mod tests {
         assert!(r.body_html.contains("<circle r=\"5\"/>"));
         assert!(r.body_html.contains("<p class=\"caption\">Fig · demo</p>"));
         assert!(!r.body_html.contains("<img"));
+    }
+
+    #[test]
+    fn render_wiki_page_keeps_body_without_overview_heading() {
+        // Regression for the wiki-render bug: `render_body` strips
+        // everything before `## Overview`, so a wiki page that starts
+        // with `# Slug` plus prose came out empty. `render_wiki_page`
+        // keeps the body intact.
+        let tmp = TempDir::new().unwrap();
+        let md = "# Scheduler\n\nThe scheduler coordinates workers.\n\nSecond paragraph.\n";
+        let r = render_wiki_page(md, tmp.path()).unwrap();
+        assert!(r.body_html.contains("<h1>Scheduler</h1>"));
+        assert!(r.body_html.contains("coordinates workers"));
+        assert!(r.body_html.contains("Second paragraph"));
     }
 
     #[test]
