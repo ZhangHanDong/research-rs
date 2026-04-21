@@ -229,6 +229,19 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+
+    /// v3: `research wiki lint` ran. Counts only — the full diagnostic
+    /// payload lives in the CLI envelope (and optionally stdout), not
+    /// in the event log. Non-blocker: lint never fails a `coverage`
+    /// blocker, it's a health-check for humans.
+    WikiLintRan {
+        timestamp: DateTime<Utc>,
+        issues: u32,
+        orphans: u32,
+        broken_links: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

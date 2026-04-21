@@ -286,6 +286,16 @@ pub enum WikiCmd {
         #[arg(long, default_value = "claude")]
         provider: String,
     },
+    /// Health check over the wiki (orphans, broken links, stale pages,
+    /// missing crossrefs, kind conflicts). Never blocks coverage.
+    Lint {
+        #[arg(long)]
+        slug: Option<String>,
+        /// Flag pages whose `updated:` frontmatter is older than this
+        /// many days. Default 7.
+        #[arg(long = "stale-days")]
+        stale_days: Option<i64>,
+    },
 }
 
 /// Entry point used by `main.rs`. Returns the process exit code.
@@ -442,6 +452,9 @@ fn dispatch(cmd: Commands) -> Envelope {
                     format.as_deref(),
                     &provider,
                 )
+            }
+            WikiCmd::Lint { slug, stale_days } => {
+                commands::wiki_lint::run(slug.as_deref(), stale_days)
             }
         },
         Commands::Schema { sub } => match sub {
