@@ -308,7 +308,9 @@ fn diagram_ref_paths(md: &str) -> Vec<String> {
 /// Same but also surfaces the `![alt](diagrams/x.svg)` alt text so the
 /// loop's user-prompt can tell the agent what caption to restore.
 /// Exposed at crate visibility so `autoresearch::executor` can print
-/// unresolved refs without duplicating the regex.
+/// unresolved refs without duplicating the regex. Only consumed under
+/// the `autoresearch` feature; default builds see it as dead code.
+#[cfg_attr(not(feature = "autoresearch"), allow(dead_code))]
 pub(crate) fn diagram_refs_with_alt(md: &str) -> Vec<(String, String)> {
     let re = diagram_re();
     re.captures_iter(md)
@@ -320,7 +322,10 @@ pub(crate) fn diagram_refs_with_alt(md: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// True iff `<session>/diagrams/<rel>` exists on disk.
+/// True iff `<session>/diagrams/<rel>` exists on disk. Only used by
+/// the autoresearch loop's user prompt to flag unresolved diagram
+/// references; default builds don't see any call site.
+#[cfg_attr(not(feature = "autoresearch"), allow(dead_code))]
 pub(crate) fn diagram_path_resolved(slug: &str, rel: &str) -> bool {
     layout::session_dir(slug).join("diagrams").join(rel).is_file()
 }
