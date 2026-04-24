@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 
 use crate::output::Envelope;
@@ -19,57 +20,57 @@ struct Row {
 }
 
 pub fn run(filter_tag: Option<&str>, tree: bool) -> Envelope {
-    let root = layout::research_root();
-    if !root.exists() {
-        return Envelope::ok(CMD, json!({ "sessions": [] }));
-    }
-
-    let entries = match fs::read_dir(&root) {
-        Ok(e) => e,
-        Err(e) => return Envelope::fail(CMD, "IO_ERROR", format!("read root: {e}")),
-    };
-
     let mut rows: Vec<Row> = Vec::new();
-    for ent in entries.flatten() {
-        let path = ent.path();
-        if !path.is_dir() {
+    let mut seen_slugs: HashSet<String> = HashSet::new();
+    for root in layout::research_roots_for_discovery() {
+        if !root.exists() {
             continue;
         }
-        let slug = match path.file_name().and_then(|s| s.to_str()) {
-            Some(s) if !s.starts_with('.') => s.to_string(),
-            _ => continue,
+        let entries = match fs::read_dir(&root) {
+            Ok(e) => e,
+            Err(e) => return Envelope::fail(CMD, "IO_ERROR", format!("read root: {e}")),
         };
-        if !config::exists(&slug) {
-            continue;
-        }
-        let cfg = match config::read(&slug) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        if let Some(t) = filter_tag {
-            if !cfg.tags.iter().any(|x| x == t) {
+        for ent in entries.flatten() {
+            let path = ent.path();
+            if !path.is_dir() {
                 continue;
             }
+            let slug = match path.file_name().and_then(|s| s.to_str()) {
+                Some(s) if !s.starts_with('.') => s.to_string(),
+                _ => continue,
+            };
+            if !seen_slugs.insert(slug.clone()) || !config::exists(&slug) {
+                continue;
+            }
+            let cfg = match config::read(&slug) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if let Some(t) = filter_tag
+                && !cfg.tags.iter().any(|x| x == t)
+            {
+                continue;
+            }
+            let source_count = log::read_all(&slug)
+                .map(|events| {
+                    events
+                        .iter()
+                        .filter(|e| matches!(e, SessionEvent::SourceAccepted { .. }))
+                        .count() as u32
+                })
+                .unwrap_or(0);
+            let status = if cfg.is_closed() { "closed" } else { "open" };
+            rows.push(Row {
+                slug: cfg.slug,
+                topic: cfg.topic,
+                preset: cfg.preset,
+                created_at: cfg.created_at,
+                source_count,
+                status,
+                parent_slug: cfg.parent_slug,
+                tags: cfg.tags,
+            });
         }
-        let source_count = log::read_all(&slug)
-            .map(|events| {
-                events
-                    .iter()
-                    .filter(|e| matches!(e, SessionEvent::SourceAccepted { .. }))
-                    .count() as u32
-            })
-            .unwrap_or(0);
-        let status = if cfg.is_closed() { "closed" } else { "open" };
-        rows.push(Row {
-            slug: cfg.slug,
-            topic: cfg.topic,
-            preset: cfg.preset,
-            created_at: cfg.created_at,
-            source_count,
-            status,
-            parent_slug: cfg.parent_slug,
-            tags: cfg.tags,
-        });
     }
 
     rows.sort_by(|a, b| a.created_at.cmp(&b.created_at));
@@ -101,8 +102,7 @@ fn render_flat(rows: Vec<Row>) -> Envelope {
 
 fn render_tree(rows: Vec<Row>) -> Envelope {
     // Index by slug + group by parent.
-    let slugs: std::collections::HashSet<String> =
-        rows.iter().map(|r| r.slug.clone()).collect();
+    let slugs: std::collections::HashSet<String> = rows.iter().map(|r| r.slug.clone()).collect();
     let mut children_of: HashMap<String, Vec<&Row>> = HashMap::new();
     let mut roots: Vec<&Row> = Vec::new();
     let mut orphans: Vec<&Row> = Vec::new();
@@ -135,10 +135,7 @@ fn render_tree(rows: Vec<Row>) -> Envelope {
         })
     }
 
-    let tree_json: Vec<Value> = roots
-        .iter()
-        .map(|r| node_json(r, &children_of))
-        .collect();
+    let tree_json: Vec<Value> = roots.iter().map(|r| node_json(r, &children_of)).collect();
 
     // Plain-text ASCII rendering — printed via envelope's non-JSON path.
     // We also dump it to stderr-neutral stdout eagerly so plain-text users
