@@ -74,6 +74,8 @@ pub enum Commands {
         sample: usize,
         #[arg(long)]
         out: Option<String>,
+        #[arg(long)]
+        html: Option<String>,
     },
     /// Set a session active again and print its session.md + recent events.
     Resume { slug: String },
@@ -398,7 +400,8 @@ fn dispatch(cmd: Commands) -> Envelope {
             depth,
             sample,
             out,
-        } => commands::github_audit::run(&repo, &depth, sample, out.as_deref()),
+            html,
+        } => commands::github_audit::run(&repo, &depth, sample, out.as_deref(), html.as_deref()),
         Commands::Resume { slug } => commands::resume::run(&slug),
         Commands::Add {
             url,

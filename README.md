@@ -228,13 +228,17 @@ score, band, confidence, reasons, and evidence, not a hard “fake/real” verdi
 
 ```bash
 ascent-research github-audit dagster-io/dagster \
-  --depth timeline --sample 500 --out audit.json
+  --depth timeline --sample 500 --out audit.json --html audit.html
 ascent-research new "dagster-io/dagster GitHub trust audit" \
   --slug dagster-trust --preset github-trust --tag fact-check
 ascent-research add-local audit.json --slug dagster-trust
 ascent-research loop dagster-trust --provider claude --iterations 8
 ascent-research finish dagster-trust --open
 ```
+
+Use `audit.html` when the user needs the trust decision surface directly:
+score, band, confidence, metric dashboard, reasons, and evidence gaps. Use the
+research session only for contextual follow-up around that deterministic score.
 
 Full command reference, error-code triage, loop contracts, and scenario
 playbooks: see [`skills/ascent-research/SKILL.md`](skills/ascent-research/SKILL.md).

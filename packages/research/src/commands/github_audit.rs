@@ -1,8 +1,11 @@
+#![allow(clippy::result_large_err)]
+
 use chrono::{DateTime, Utc};
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 
 use crate::fetch::postagent;
@@ -65,7 +68,13 @@ enum StatsAvailability {
     Unavailable,
 }
 
-pub fn run(repo: &str, depth: &str, sample: usize, out: Option<&str>) -> Envelope {
+pub fn run(
+    repo: &str,
+    depth: &str,
+    sample: usize,
+    out: Option<&str>,
+    html: Option<&str>,
+) -> Envelope {
     if !DEPTHS.contains(&depth) {
         return Envelope::fail(
             CMD,
@@ -106,7 +115,7 @@ pub fn run(repo: &str, depth: &str, sample: usize, out: Option<&str>) -> Envelop
         collect_repo_depth(&repo_input)
     };
 
-    write_out_if_requested(envelope, out)
+    write_outputs_if_requested(envelope, out, html)
 }
 
 pub fn render_plain_summary(envelope: &Envelope) {
@@ -159,6 +168,9 @@ pub fn render_plain_summary(envelope: &Envelope) {
     println!("reasons: {reasons}");
     if let Some(path) = data.get("out").and_then(Value::as_str) {
         println!("out: {path}");
+    }
+    if let Some(path) = data.get("html_out").and_then(Value::as_str) {
+        println!("html: {path}");
     }
 }
 
@@ -215,28 +227,473 @@ fn invalid_repo_input(input: &str) -> Envelope {
     }))
 }
 
-fn write_out_if_requested(envelope: Envelope, out: Option<&str>) -> Envelope {
+fn write_outputs_if_requested(
+    envelope: Envelope,
+    out: Option<&str>,
+    html: Option<&str>,
+) -> Envelope {
     if !envelope.ok {
         return envelope;
     }
-    let Some(path) = out else {
+    if out.is_none() && html.is_none() {
         return envelope;
-    };
+    }
 
     let mut envelope = envelope;
     if let Some(data) = envelope.data.as_object_mut() {
-        data.insert("out".to_string(), json!(path));
+        if let Some(path) = out {
+            data.insert("out".to_string(), json!(path));
+        }
+        if let Some(path) = html {
+            data.insert("html_out".to_string(), json!(path));
+        }
     }
 
-    match serde_json::to_string_pretty(&envelope)
-        .map_err(|err| err.to_string())
-        .and_then(|body| fs::write(path, body).map_err(|err| err.to_string()))
+    if let Some(path) = html
+        && let Err(message) =
+            fs::write(path, render_html_report(&envelope.data)).map_err(|err| err.to_string())
     {
-        Ok(()) => envelope,
-        Err(message) => Envelope::fail(CMD, "OUTPUT_WRITE_FAILED", message).with_details(json!({
+        return Envelope::fail(CMD, "OUTPUT_WRITE_FAILED", message).with_details(json!({
             "path": path,
-        })),
+        }));
     }
+
+    if let Some(path) = out {
+        match serde_json::to_string_pretty(&envelope)
+            .map_err(|err| err.to_string())
+            .and_then(|body| fs::write(path, body).map_err(|err| err.to_string()))
+        {
+            Ok(()) => envelope,
+            Err(message) => {
+                Envelope::fail(CMD, "OUTPUT_WRITE_FAILED", message).with_details(json!({
+                    "path": path,
+                }))
+            }
+        }
+    } else {
+        envelope
+    }
+}
+
+fn render_html_report(data: &Value) -> String {
+    let owner = text_path(data, &["repository", "owner"], "unknown");
+    let repo = text_path(data, &["repository", "repo"], "unknown");
+    let html_url = text_path(data, &["repository", "html_url"], "");
+    let depth = text_path(data, &["depth"], "unknown");
+    let stars = u64_path(data, &["repository", "stars"]).unwrap_or(0);
+    let forks = u64_path(data, &["repository", "forks"]).unwrap_or(0);
+    let open_issues = u64_path(data, &["repository", "open_issues"]).unwrap_or(0);
+    let score = i64_path(data, &["risk", "score"])
+        .unwrap_or(0)
+        .clamp(0, 100);
+    let band = text_path(data, &["risk", "band"], "unknown");
+    let confidence = f64_path(data, &["risk", "confidence"])
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let reasons = string_array_path(data, &["risk", "reasons"]);
+    let evidence = string_array_path(data, &["risk", "evidence"]);
+    let sample_requested = u64_path(data, &["sample", "requested"]).unwrap_or(0);
+    let sample_fetched = u64_path(data, &["sample", "fetched"]).unwrap_or(0);
+    let unavailable = data
+        .get("github_api")
+        .and_then(|api| api.get("unavailable"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let metrics = vec![
+        Metric::score("risk.score", score as f64 / 100.0, format!("{score}/100")),
+        Metric::score("risk.confidence", confidence, format!("{confidence:.2}")),
+        Metric::share(
+            "max_24h_star_share",
+            f64_path(data, &["signals", "timeline", "max_24h_star_share"]),
+            count_pair(
+                u64_path(data, &["signals", "timeline", "max_24h_stars"]),
+                u64_path(data, &["signals", "timeline", "starred_at_available_count"]),
+            ),
+        ),
+        Metric::share(
+            "max_daily_star_share",
+            f64_path(data, &["signals", "timeline", "max_daily_star_share"]),
+            count_pair(
+                u64_path(data, &["signals", "timeline", "max_daily_stars"]),
+                u64_path(data, &["signals", "timeline", "starred_at_available_count"]),
+            ),
+        ),
+        Metric::share(
+            "max_hourly_star_share",
+            f64_path(data, &["signals", "timeline", "max_hourly_star_share"]),
+            count_pair(
+                u64_path(data, &["signals", "timeline", "max_hourly_stars"]),
+                u64_path(data, &["signals", "timeline", "starred_at_available_count"]),
+            ),
+        ),
+        Metric::share(
+            "empty_bio_share",
+            f64_path(data, &["signals", "stargazers", "empty_bio_share"]),
+            None,
+        ),
+        Metric::share(
+            "low_follower_share",
+            f64_path(data, &["signals", "stargazers", "low_follower_share"]),
+            None,
+        ),
+        Metric::share(
+            "zero_public_repos_share",
+            f64_path(data, &["signals", "stargazers", "zero_public_repos_share"]),
+            None,
+        ),
+        Metric::share(
+            "subscriber_star_ratio",
+            f64_path(data, &["signals", "repo", "subscriber_star_ratio"]),
+            count_pair(
+                u64_path(data, &["signals", "repo", "subscribers_count"]),
+                Some(stars),
+            ),
+        ),
+        Metric::share(
+            "fork_star_ratio",
+            f64_path(data, &["signals", "repo", "fork_star_ratio"]),
+            Some(format!("{forks}/{stars}")),
+        ),
+    ];
+
+    let mut out = String::new();
+    let title = format!("{owner}/{repo} GitHub Trust Audit");
+    write!(
+        out,
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{}</title>
+<style>
+:root {{ --ink:#172018; --muted:#5c685e; --line:#d9e2d6; --paper:#fbfaf4; --card:#ffffff; --accent:#235b3a; --warn:#b7791f; --danger:#9b2c2c; }}
+body {{ margin:0; background:linear-gradient(135deg,#f8f4e8 0%,#edf5ec 58%,#dfece2 100%); color:var(--ink); font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif; }}
+main {{ max-width:1120px; margin:0 auto; padding:48px 24px 72px; }}
+.hero {{ display:grid; grid-template-columns:1.2fr .8fr; gap:24px; align-items:stretch; }}
+.card {{ background:rgba(255,255,255,.86); border:1px solid var(--line); border-radius:24px; padding:24px; box-shadow:0 18px 50px rgba(34,61,37,.10); }}
+.eyebrow {{ color:var(--accent); font:700 12px/1.2 ui-sans-serif, system-ui; letter-spacing:.14em; text-transform:uppercase; }}
+h1 {{ font-size:48px; line-height:1; margin:10px 0 18px; letter-spacing:-.04em; }}
+h2 {{ font-size:28px; margin:40px 0 14px; letter-spacing:-.02em; }}
+p {{ font-size:18px; line-height:1.55; }}
+.score {{ font:800 72px/1 ui-sans-serif, system-ui; letter-spacing:-.06em; }}
+.band {{ display:inline-block; padding:8px 12px; border-radius:999px; background:#f4e3bd; color:#6d4308; font:700 13px/1 ui-sans-serif, system-ui; text-transform:uppercase; }}
+.kpis {{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:18px; }}
+.kpi {{ border:1px solid var(--line); border-radius:16px; padding:14px; background:#fff; }}
+.kpi b {{ display:block; font:800 22px/1.1 ui-sans-serif, system-ui; }}
+.kpi span {{ color:var(--muted); font:700 12px/1.2 ui-sans-serif, system-ui; text-transform:uppercase; letter-spacing:.08em; }}
+.chart {{ margin-top:18px; background:#fff; border:1px solid var(--line); border-radius:18px; padding:16px; overflow:auto; }}
+table {{ width:100%; border-collapse:collapse; background:#fff; border-radius:18px; overflow:hidden; }}
+th,td {{ border-bottom:1px solid var(--line); padding:12px; text-align:left; vertical-align:top; }}
+th {{ font:800 12px/1.2 ui-sans-serif, system-ui; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }}
+code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
+.note {{ border-left:4px solid var(--warn); padding:12px 16px; background:#fff8e8; border-radius:12px; }}
+@media (max-width: 820px) {{ .hero,.kpis {{ grid-template-columns:1fr; }} h1 {{ font-size:38px; }} }}
+</style>
+</head>
+<body><main>
+"#,
+        html_escape(&title)
+    )
+    .unwrap();
+
+    write!(
+        out,
+        r#"<section class="hero">
+<div class="card">
+<div class="eyebrow">GitHub Trust Audit</div>
+<h1>{}/{}</h1>
+<p>This report is a deterministic scorecard for repository trust signals. It measures star-growth concentration, sampled stargazer quality signals, repository ratios, GitHub-native stats availability, and confidence. <strong>Not a fake/real verdict.</strong></p>
+<p class="note"><strong>unknown means evidence is incomplete</strong>: the score can still be high, but missing or pending GitHub-native statistics prevent a final risk band.</p>
+</div>
+<div class="card">
+<div class="eyebrow">Risk score</div>
+<div class="score risk-score-value">{score}</div>
+<div class="band">{}</div>
+<p>Confidence: <strong class="confidence-value">{confidence:.2}</strong></p>
+<p>Depth: <strong>{}</strong></p>
+</div>
+</section>
+"#,
+        html_escape(owner),
+        html_escape(repo),
+        html_escape(band),
+        html_escape(depth)
+    )
+    .unwrap();
+
+    write!(
+        out,
+        r#"<section class="kpis">
+<div class="kpi"><span>Stars</span><b>{stars}</b></div>
+<div class="kpi"><span>Forks</span><b>{forks}</b></div>
+<div class="kpi"><span>Open issues</span><b>{open_issues}</b></div>
+<div class="kpi"><span>Sample</span><b>{sample_fetched}/{sample_requested}</b></div>
+</section>
+<section>
+<h2>Metric Dashboard</h2>
+<div class="chart">{}</div>
+</section>
+"#,
+        render_metric_svg(&metrics)
+    )
+    .unwrap();
+
+    out.push_str("<section><h2>Measured Signals</h2><table><thead><tr><th>Metric</th><th>Value</th><th>Observed count</th><th>Why it matters</th></tr></thead><tbody>");
+    for metric in &metrics {
+        write!(
+            out,
+            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            html_escape(metric.key),
+            html_escape(&metric.display_value()),
+            html_escape(metric.detail.as_deref().unwrap_or("n/a")),
+            html_escape(metric_explanation(metric.key))
+        )
+        .unwrap();
+    }
+    out.push_str("</tbody></table></section>");
+
+    out.push_str(
+        "<section><h2>Risk Reasons</h2><table><thead><tr><th>Reason</th></tr></thead><tbody>",
+    );
+    if reasons.is_empty() {
+        out.push_str("<tr><td>none</td></tr>");
+    } else {
+        for reason in reasons {
+            write!(
+                out,
+                "<tr><td><code>{}</code></td></tr>",
+                html_escape(&reason)
+            )
+            .unwrap();
+        }
+    }
+    out.push_str("</tbody></table></section>");
+
+    out.push_str("<section><h2>Evidence And Gaps</h2><table><thead><tr><th>Type</th><th>Value</th><th>Status</th></tr></thead><tbody>");
+    for item in evidence {
+        write!(
+            out,
+            "<tr><td>evidence</td><td><code>{}</code></td><td>used</td></tr>",
+            html_escape(&item)
+        )
+        .unwrap();
+    }
+    for item in unavailable {
+        let endpoint = item
+            .get("endpoint")
+            .or_else(|| item.get("path"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let reason = item
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("unavailable");
+        let status = item
+            .get("status")
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".to_string());
+        write!(
+            out,
+            "<tr><td>gap</td><td><code>{}</code></td><td>{} ({})</td></tr>",
+            html_escape(endpoint),
+            html_escape(reason),
+            html_escape(&status)
+        )
+        .unwrap();
+    }
+    out.push_str("</tbody></table></section>");
+
+    if !html_url.is_empty() {
+        write!(
+            out,
+            r#"<p>Repository: <a href="{}">{}</a></p>"#,
+            attr_escape(html_url),
+            html_escape(html_url)
+        )
+        .unwrap();
+    }
+    out.push_str("</main></body></html>");
+    out
+}
+
+struct Metric {
+    key: &'static str,
+    value: Option<f64>,
+    detail: Option<String>,
+    score_style: bool,
+}
+
+impl Metric {
+    fn score(key: &'static str, value: f64, detail: String) -> Self {
+        Self {
+            key,
+            value: Some(value),
+            detail: Some(detail),
+            score_style: true,
+        }
+    }
+
+    fn share(key: &'static str, value: Option<f64>, detail: Option<String>) -> Self {
+        Self {
+            key,
+            value,
+            detail,
+            score_style: false,
+        }
+    }
+
+    fn display_value(&self) -> String {
+        match (self.value, self.score_style) {
+            (Some(value), true) if self.key == "risk.score" => {
+                self.detail.clone().unwrap_or_else(|| format!("{value:.2}"))
+            }
+            (Some(value), true) => format!("{value:.2}"),
+            (Some(value), false) => format!("{value:.4} ({:.1}%)", value * 100.0),
+            (None, _) => "n/a".to_string(),
+        }
+    }
+}
+
+fn render_metric_svg(metrics: &[Metric]) -> String {
+    let row_h = 36;
+    let width = 940;
+    let height = 42 + metrics.len() as i32 * row_h;
+    let mut svg = String::new();
+    write!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-label="GitHub trust audit metrics">"#
+    )
+    .unwrap();
+    svg.push_str(r##"<rect width="940" height="100%" rx="14" fill="#fbfaf4"/>"##);
+    svg.push_str(r##"<text x="22" y="28" font-family="ui-sans-serif, system-ui" font-size="16" font-weight="800" fill="#172018">GitHub trust audit metrics</text>"##);
+    for (idx, metric) in metrics.iter().enumerate() {
+        let y = 54 + idx as i32 * row_h;
+        let value = metric.value.unwrap_or(0.0).clamp(0.0, 1.0);
+        let bar_w = (value * 420.0).round() as i32;
+        let color = if metric.score_style {
+            "#235b3a"
+        } else if value >= 0.6 {
+            "#9b2c2c"
+        } else if value >= 0.35 {
+            "#b7791f"
+        } else {
+            "#235b3a"
+        };
+        write!(
+            svg,
+            r##"<text x="22" y="{y}" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#172018">{}</text>"##,
+            html_escape(metric.key)
+        )
+        .unwrap();
+        write!(
+            svg,
+            r##"<rect x="300" y="{}" width="420" height="16" rx="8" fill="#e4eadf"/><rect x="300" y="{}" width="{bar_w}" height="16" rx="8" fill="{color}"/>"##,
+            y - 13,
+            y - 13
+        )
+        .unwrap();
+        write!(
+            svg,
+            r##"<text x="740" y="{y}" font-family="ui-sans-serif, system-ui" font-size="13" font-weight="700" fill="#172018">{}</text>"##,
+            html_escape(&metric.display_value())
+        )
+        .unwrap();
+    }
+    svg.push_str("</svg>");
+    svg
+}
+
+fn metric_explanation(key: &str) -> &'static str {
+    match key {
+        "risk.score" => {
+            "Composite deterministic risk score, 0 is lowest observed risk and 100 is highest."
+        }
+        "risk.confidence" => {
+            "How complete the evidence chain is; low confidence means re-run or collect missing stats."
+        }
+        "max_24h_star_share" => "Large share of stars in one 24h window is a burst signal.",
+        "max_daily_star_share" => {
+            "Large share of stars on one calendar day is a growth-concentration signal."
+        }
+        "max_hourly_star_share" => "Large share of stars in one hour is an acute burst signal.",
+        "empty_bio_share" => {
+            "High share of sampled accounts without bios can indicate low-quality stargazer population."
+        }
+        "low_follower_share" => {
+            "High share of accounts with <=1 follower can indicate weak account credibility."
+        }
+        "zero_public_repos_share" => {
+            "High share of accounts without public repos can indicate low organic developer activity."
+        }
+        "subscriber_star_ratio" => {
+            "Low subscriber-to-star ratio suggests stars are not matched by real watchers."
+        }
+        "fork_star_ratio" => {
+            "Low fork-to-star ratio suggests stars are not matched by downstream developer use."
+        }
+        _ => "Measured audit signal.",
+    }
+}
+
+fn text_path<'a>(value: &'a Value, path: &[&str], default: &'a str) -> &'a str {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+        .and_then(Value::as_str)
+        .unwrap_or(default)
+}
+
+fn f64_path(value: &Value, path: &[&str]) -> Option<f64> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+        .and_then(Value::as_f64)
+}
+
+fn u64_path(value: &Value, path: &[&str]) -> Option<u64> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+        .and_then(Value::as_u64)
+}
+
+fn i64_path(value: &Value, path: &[&str]) -> Option<i64> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+        .and_then(Value::as_i64)
+}
+
+fn string_array_path(value: &Value, path: &[&str]) -> Vec<String> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn count_pair(count: Option<u64>, total: Option<u64>) -> Option<String> {
+    match (count, total) {
+        (Some(count), Some(total)) => Some(format!("{count}/{total}")),
+        _ => None,
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn attr_escape(s: &str) -> String {
+    html_escape(s)
 }
 
 fn collect_repo_depth(repo: &RepoInput) -> Envelope {
@@ -524,17 +981,11 @@ fn collect_stargazers(repo: &RepoInput, sample: usize) -> Result<StargazerCollec
             "/repos/{}/{}/stargazers?per_page=100&page={page}",
             repo.owner, repo.repo
         );
-        let response = match github_get_required(&path, true, GITHUB_STAR_ACCEPT) {
-            Ok(response) => response,
-            Err(envelope) => return Err(envelope),
-        };
+        let response = github_get_required(&path, true, GITHUB_STAR_ACCEPT)?;
         pages_fetched += 1;
         endpoints.push(endpoint_json(&response.endpoint));
 
-        let page_samples = match parse_stargazer_page(&response) {
-            Ok(page_samples) => page_samples,
-            Err(envelope) => return Err(envelope),
-        };
+        let page_samples = parse_stargazer_page(&response)?;
         if page_samples.is_empty() {
             break;
         }
@@ -553,10 +1004,7 @@ fn collect_stargazers(repo: &RepoInput, sample: usize) -> Result<StargazerCollec
     let mut profiles = Vec::new();
     for sample in &samples {
         let path = format!("/users/{}", sample.login);
-        let response = match github_get_required(&path, true, GITHUB_JSON_ACCEPT) {
-            Ok(response) => response,
-            Err(envelope) => return Err(envelope),
-        };
+        let response = github_get_required(&path, true, GITHUB_JSON_ACCEPT)?;
         endpoints.push(endpoint_json(&response.endpoint));
         profiles.push(parse_stargazer_profile(&response)?);
     }

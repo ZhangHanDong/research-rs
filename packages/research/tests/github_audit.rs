@@ -1040,6 +1040,49 @@ fn github_audit_out_writes_full_envelope() {
 }
 
 #[test]
+fn github_audit_html_report_renders_trust_scorecard() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent_timeline_burst());
+    let html_path = env.path("audit.html");
+    let html_arg = html_path.to_string_lossy().into_owned();
+
+    let (v, stdout, stderr, code) = env.research_with_postagent_env(
+        &[
+            "--json",
+            "github-audit",
+            "owner/repo",
+            "--depth",
+            "timeline",
+            "--sample",
+            "100",
+            "--html",
+            &html_arg,
+        ],
+        Some(&postagent),
+        &[],
+    );
+
+    assert_eq!(code, 0, "{v:#?}\nstdout={stdout}\nstderr={stderr}");
+    assert_eq!(v["data"]["html_out"], html_arg);
+    let html = fs::read_to_string(html_path).unwrap();
+    assert!(html.contains("GitHub Trust Audit"));
+    assert!(html.contains("owner/repo"));
+    assert!(html.contains("Risk score"));
+    assert!(html.contains("Confidence"));
+    assert!(html.contains("risk-score-value"));
+    assert!(html.contains("confidence-value"));
+    assert!(html.contains("max_24h_star_share"));
+    assert!(html.contains("max_daily_star_share"));
+    assert!(html.contains("empty_bio_share"));
+    assert!(html.contains("subscriber_star_ratio"));
+    assert!(html.contains("<svg"));
+    assert!(html.contains("Not a fake/real verdict"));
+    assert!(html.contains("unknown means evidence is incomplete"));
+    assert!(!html.contains("Authorization"));
+    assert!(!html.contains("GITHUB.TOKEN"));
+}
+
+#[test]
 fn github_audit_human_output_is_summary_only() {
     let env = Env::new();
     let postagent = env.write_fake_bin("postagent", &fake_github_postagent());
