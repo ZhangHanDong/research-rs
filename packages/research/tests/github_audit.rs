@@ -171,14 +171,12 @@ fi
 case "$*" in
   *"/repos/dagster-io/dagster/stargazers?per_page=100&page=1"*)
     cat <<'JSON'
-[{"starred_at":"2024-01-01T00:00:00Z","user":{"login":"u1"}},{"starred_at":"2024-02-01T00:00:00Z","user":{"login":"u2"}}]
+[{"starred_at":"2024-01-01T00:00:00Z","user":{"login":"u1"}},{"starred_at":"2024-02-01T00:00:00Z","user":{"login":"u2"}},{"login":"u3"}]
 JSON
     exit 0 ;;
   *"/repos/dagster-io/dagster/stargazers?per_page=100&page=2"*)
-    cat <<'JSON'
-[{"login":"u3"}]
-JSON
-    exit 0 ;;
+    printf '%s\n' 'page 2 should not be requested after short page' >&2
+    exit 1 ;;
   *"/users/u1"*)
     cat <<'JSON'
 {"login":"u1","created_at":"2023-01-01T00:00:00Z","followers":0,"public_repos":0,"bio":""}
@@ -370,12 +368,7 @@ case "$*" in
 JSON
     exit 0 ;;
   *"/repos/owner/repo/stargazers?per_page=100&page=2"*)
-    cat <<'JSON'
-[]
-JSON
-    exit 0 ;;
-  *"/repos/owner/repo/stargazers?per_page=100&page=3"*)
-    printf '%s\n' 'page 3 should not be requested' >&2
+    printf '%s\n' 'page 2 should not be requested after short page' >&2
     exit 1 ;;
   *"/users/u1"*)
     cat <<'JSON'
@@ -409,6 +402,50 @@ JSON
   *"/repos/owner/repo"*)
     cat <<'JSON'
 {"name":"repo","full_name":"owner/repo","owner":{"login":"owner"},"html_url":"https://github.com/owner/repo","stargazers_count":10,"forks_count":2,"open_issues_count":1}
+JSON
+    exit 0 ;;
+esac
+
+printf '%s\n' "unexpected request: $*" >&2
+exit 1
+"#
+    .to_string()
+}
+
+fn fake_github_postagent_repo_commit_risk() -> String {
+    r#"#!/bin/sh
+if [ -n "$POSTAGENT_REQUEST_LOG" ]; then
+  printf '%s\n' "$*" >> "$POSTAGENT_REQUEST_LOG"
+fi
+
+case "$*" in
+  *"/repos/owner/repo/traffic/"*)
+    printf '%s\n' '⚠ 403 — endpoint requires authorization at https://api.github.com/repos/owner/repo/traffic' >&2
+    printf '%s\n' 'HTTP 403 Forbidden' >&2
+    exit 0 ;;
+  *"/repos/owner/repo/contributors"*)
+    cat <<'JSON'
+[{"login":"owner"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/subscribers"*)
+    cat <<'JSON'
+[{"login":"watcher"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stats/commit_activity"*)
+    cat <<'JSON'
+[{"week":1711843200,"total":0},{"week":1712448000,"total":0},{"week":1713052800,"total":1}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stats/contributors"*)
+    cat <<'JSON'
+[{"total":1,"author":{"login":"owner"}}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo"*)
+    cat <<'JSON'
+{"name":"repo","full_name":"owner/repo","owner":{"login":"owner"},"html_url":"https://github.com/owner/repo","stargazers_count":5000,"forks_count":10,"open_issues_count":1,"watchers_count":5000}
 JSON
     exit 0 ;;
 esac
@@ -603,6 +640,26 @@ fn github_audit_repo_depth_anonymous_success() {
         v["data"]["signals"]["repo"]["commit_activity_source"],
         "github_native_stats"
     );
+    assert_eq!(
+        v["data"]["signals"]["repo"]["fork_star_ratio"],
+        2100.0 / 12345.0
+    );
+    assert_eq!(
+        v["data"]["signals"]["repo"]["subscriber_star_ratio"],
+        2.0 / 12345.0
+    );
+    assert_eq!(
+        v["data"]["signals"]["repo"]["issue_star_ratio"],
+        321.0 / 12345.0
+    );
+    assert_eq!(
+        v["data"]["signals"]["repo"]["contributors_star_ratio"],
+        3.0 / 12345.0
+    );
+    assert_eq!(
+        v["data"]["signals"]["repo"]["commit_activity_total_52w"],
+        42
+    );
     assert_eq!(v["data"]["signals"]["repo"]["watchers_count_ignored"], true);
     assert!(array_contains_endpoint(
         &v["data"]["github_api"]["unavailable"],
@@ -626,6 +683,69 @@ fn github_audit_repo_depth_anonymous_success() {
     assert!(log.contains("Accept: application/vnd.github+json"));
     assert!(!log.contains("Authorization"));
     assert!(!log.contains("GITHUB.TOKEN"));
+}
+
+#[test]
+fn github_audit_prefers_native_github_stats() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent_repo_commit_risk());
+
+    let (v, _, _, code) = env.research_with_postagent(
+        &["--json", "github-audit", "owner/repo", "--depth", "repo"],
+        Some(&postagent),
+    );
+
+    assert_eq!(code, 0, "{v:#?}");
+    assert_eq!(
+        v["data"]["signals"]["repo"]["commit_activity_source"],
+        "github_native_stats"
+    );
+    assert_eq!(v["data"]["signals"]["repo"]["commit_activity_total_52w"], 1);
+    assert!(
+        v["data"]["risk"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason
+                .as_str()
+                .unwrap()
+                .starts_with("low_commit_activity_per_star="))
+    );
+    assert!(
+        v["data"]["risk"]["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "/repos/owner/repo/stats/commit_activity")
+    );
+}
+
+#[test]
+fn github_audit_does_not_treat_watchers_count_as_subscribers() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent());
+
+    let (v, _, _, code) = env.research_with_postagent(
+        &[
+            "--json",
+            "github-audit",
+            "dagster-io/dagster",
+            "--depth",
+            "repo",
+        ],
+        Some(&postagent),
+    );
+
+    assert_eq!(code, 0, "{v:#?}");
+    assert_eq!(v["data"]["signals"]["repo"]["subscribers_count"], 2);
+    assert_eq!(
+        v["data"]["signals"]["repo"]["subscriber_star_ratio"],
+        2.0 / 12345.0
+    );
+    assert_ne!(
+        v["data"]["signals"]["repo"]["subscriber_star_ratio"],
+        12345.0 / 12345.0
+    );
 }
 
 #[test]
@@ -780,6 +900,13 @@ fn github_audit_timeline_computes_burst_signals() {
                 .unwrap()
                 .starts_with("max_daily_star_share="))
     );
+    assert!(
+        v["data"]["risk"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "star_burst")
+    );
     let log = env.postagent_log();
     assert!(log.contains("$POSTAGENT.GITHUB.TOKEN"));
     assert!(!stdout.contains("Authorization"));
@@ -813,6 +940,39 @@ fn github_audit_out_writes_full_envelope() {
     assert_eq!(written["data"]["depth"], "repo");
     assert_eq!(written["data"]["repository"]["owner"], "dagster-io");
     assert_eq!(written["data"]["risk"], v["data"]["risk"]);
+    assert_eq!(written, v);
+}
+
+#[test]
+fn github_audit_human_output_is_summary_only() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent());
+    let out_path = env.path("audit.json");
+    let out_arg = out_path.to_string_lossy().into_owned();
+
+    let (_, stdout, stderr, code) = env.research_with_postagent(
+        &[
+            "github-audit",
+            "dagster-io/dagster",
+            "--depth",
+            "repo",
+            "--out",
+            &out_arg,
+        ],
+        Some(&postagent),
+    );
+
+    assert_eq!(code, 0, "stdout={stdout}\nstderr={stderr}");
+    assert!(stdout.contains("repo: dagster-io/dagster"));
+    assert!(stdout.contains("depth: repo"));
+    assert!(stdout.contains("risk:"));
+    assert!(stdout.contains("out:"));
+    assert!(!stdout.contains("\"signals\""));
+    assert!(!stdout.contains("signals:"));
+    assert!(!stdout.contains("github_api"));
+    assert!(!stdout.contains("Authorization"));
+    assert!(!stdout.contains("GITHUB.TOKEN"));
+    assert!(!stdout.trim_start().starts_with('{'));
 }
 
 #[test]
@@ -837,7 +997,7 @@ fn github_audit_uppercase_input_accepts_canonical_repo_response() {
 }
 
 #[test]
-fn github_audit_empty_stargazer_page_stops_pagination() {
+fn github_audit_short_stargazer_page_stops_pagination() {
     let env = Env::new();
     let postagent = env.write_fake_bin("postagent", &fake_github_postagent_empty_stargazer_page());
 
@@ -858,11 +1018,10 @@ fn github_audit_empty_stargazer_page_stops_pagination() {
     assert_eq!(code, 0, "{v:#?}\nstderr={stderr}");
     assert_eq!(v["data"]["sample"]["requested"], 300);
     assert_eq!(v["data"]["sample"]["fetched"], 1);
-    assert_eq!(v["data"]["sample"]["pages"], 2);
+    assert_eq!(v["data"]["sample"]["pages"], 1);
     let log = env.postagent_log();
     assert!(log.contains("page=1"));
-    assert!(log.contains("page=2"));
-    assert!(!log.contains("page=3"));
+    assert!(!log.contains("page=2"));
 }
 
 #[test]
@@ -918,6 +1077,14 @@ fn github_audit_treats_stats_202_and_traffic_429_as_unavailable() {
     assert_eq!(
         v["data"]["signals"]["repo"]["commit_activity_source"],
         "stats_pending"
+    );
+    assert_eq!(v["data"]["risk"]["band"], "unknown");
+    assert!(
+        v["data"]["risk"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "github_stats_pending")
     );
     assert!(array_contains_endpoint(
         &v["data"]["github_api"]["unavailable"],

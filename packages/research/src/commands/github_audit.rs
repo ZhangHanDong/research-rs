@@ -108,6 +108,59 @@ pub fn run(repo: &str, depth: &str, sample: usize, out: Option<&str>) -> Envelop
     write_out_if_requested(envelope, out)
 }
 
+pub fn render_plain_summary(envelope: &Envelope) {
+    if !envelope.ok {
+        envelope.render(false);
+        return;
+    }
+
+    let data = &envelope.data;
+    let owner = data
+        .get("repository")
+        .and_then(|repo| repo.get("owner"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let repo = data
+        .get("repository")
+        .and_then(|repo| repo.get("repo"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let depth = data
+        .get("depth")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let risk = data.get("risk").unwrap_or(&Value::Null);
+    let score = risk.get("score").and_then(Value::as_i64).unwrap_or(0);
+    let band = risk
+        .get("band")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let confidence = risk
+        .get("confidence")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let reasons = risk
+        .get("reasons")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "none".to_string());
+
+    println!("repo: {owner}/{repo}");
+    println!("depth: {depth}");
+    println!("risk: score={score} band={band} confidence={confidence:.2}");
+    println!("reasons: {reasons}");
+    if let Some(path) = data.get("out").and_then(Value::as_str) {
+        println!("out: {path}");
+    }
+}
+
 fn parse_repo_input(input: &str) -> Result<RepoInput, Envelope> {
     if input.is_empty() || input.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(invalid_repo_input(input));
@@ -168,6 +221,11 @@ fn write_out_if_requested(envelope: Envelope, out: Option<&str>) -> Envelope {
     let Some(path) = out else {
         return envelope;
     };
+
+    let mut envelope = envelope;
+    if let Some(data) = envelope.data.as_object_mut() {
+        data.insert("out".to_string(), json!(path));
+    }
 
     match serde_json::to_string_pretty(&envelope)
         .map_err(|err| err.to_string())
@@ -286,6 +344,8 @@ fn collect_repo_depth_with_auth(repo: &RepoInput, authenticated: bool) -> Envelo
     } else {
         "unavailable"
     };
+    let (commit_activity_total_52w, commit_activity_weeks) =
+        commit_activity_totals(&commit_activity_response);
 
     let stars = numeric_field(&repo_json, "stargazers_count").unwrap_or(0);
     let forks = numeric_field(&repo_json, "forks_count").unwrap_or(0);
@@ -305,7 +365,7 @@ fn collect_repo_depth_with_auth(repo: &RepoInput, authenticated: bool) -> Envelo
         .and_then(|v| v.as_str())
         .unwrap_or(&repo.repo);
 
-    Envelope::ok(
+    let mut envelope = Envelope::ok(
         CMD,
         json!({
             "repository": {
@@ -336,7 +396,14 @@ fn collect_repo_depth_with_auth(repo: &RepoInput, authenticated: bool) -> Envelo
                     "open_issues": open_issues,
                     "contributors_count": contributors_count,
                     "subscribers_count": subscribers_count,
+                    "fork_star_ratio": ratio(forks, stars),
+                    "subscriber_star_ratio": ratio(subscribers_count as u64, stars),
+                    "issue_star_ratio": ratio(open_issues, stars),
+                    "contributors_star_ratio": ratio(contributors_count as u64, stars),
                     "commit_activity_source": commit_activity_source,
+                    "commit_activity_total_52w": commit_activity_total_52w,
+                    "commit_activity_weeks": commit_activity_weeks,
+                    "commit_activity_per_1k_stars": per_1k_stars(commit_activity_total_52w, stars),
                     "watchers_count_ignored": true,
                 },
                 "stargazers": {},
@@ -349,7 +416,11 @@ fn collect_repo_depth_with_auth(repo: &RepoInput, authenticated: bool) -> Envelo
                 "rate_limit_remaining_min": null,
             },
         }),
-    )
+    );
+    if let Some(data) = envelope.data.as_object_mut() {
+        update_risk(data);
+    }
+    envelope
 }
 
 fn collect_stargazers_depth(repo: &RepoInput, sample: usize) -> Envelope {
@@ -470,13 +541,14 @@ fn collect_stargazers(repo: &RepoInput, sample: usize) -> Result<StargazerCollec
         if page_samples.is_empty() {
             break;
         }
+        let short_page = page_samples.len() < 100;
         for stargazer in page_samples {
             if samples.len() >= sample {
                 break;
             }
             samples.push(stargazer);
         }
-        if samples.len() >= sample {
+        if samples.len() >= sample || short_page {
             break;
         }
     }
@@ -694,6 +766,55 @@ fn update_risk(data: &mut Map<String, Value>) {
     let mut score = 0;
     let mut reasons = Vec::new();
     let mut evidence = Vec::new();
+    let mut unknown_reasons = Vec::new();
+
+    add_low_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "repo",
+        "fork_star_ratio",
+        &[(0.001, 20), (0.005, 10)],
+    );
+    add_low_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "repo",
+        "subscriber_star_ratio",
+        &[(0.0002, 20), (0.001, 10)],
+    );
+    add_low_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "repo",
+        "contributors_star_ratio",
+        &[(0.0002, 20), (0.001, 10)],
+    );
+    add_high_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "repo",
+        "issue_star_ratio",
+        &[(0.10, 8), (0.25, 15)],
+    );
+    add_low_commit_activity_risk(data, &mut score, &mut reasons, &mut evidence);
+
+    let commit_activity_source = signals
+        .get("repo")
+        .and_then(|repo| repo.get("commit_activity_source"))
+        .and_then(Value::as_str);
+    if matches!(commit_activity_source, Some("stats_pending")) {
+        unknown_reasons.push("github_stats_pending".to_string());
+    } else if !matches!(commit_activity_source, Some("github_native_stats")) {
+        unknown_reasons.push("github_stats_unavailable".to_string());
+    }
 
     add_share_risk(
         signals,
@@ -758,6 +879,15 @@ fn update_risk(data: &mut Map<String, Value>) {
         "max_24h_star_share",
         &[(0.60, 20), (0.35, 10)],
     );
+    if reasons.iter().any(|reason| {
+        reason.starts_with("max_daily_star_share=")
+            || reason.starts_with("max_hourly_star_share=")
+            || reason.starts_with("max_24h_star_share=")
+    }) && !reasons.iter().any(|reason| reason == "star_burst")
+    {
+        reasons.push("star_burst".to_string());
+        evidence.push("signals.timeline".to_string());
+    }
     add_share_risk(
         signals,
         &mut score,
@@ -768,20 +898,29 @@ fn update_risk(data: &mut Map<String, Value>) {
         &[(0.60, 15), (0.35, 8)],
     );
 
+    let fetched = data
+        .get("sample")
+        .and_then(|sample| sample.get("fetched"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let requested = data
+        .get("sample")
+        .and_then(|sample| sample.get("requested"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if requested > 0 && fetched < requested.min(20) {
+        unknown_reasons.push("insufficient_sample".to_string());
+    }
+
     score = score.min(100);
-    let band = if score >= 70 {
+    let mut band = if score >= 70 {
         "high"
     } else if score >= 30 {
         "medium"
     } else {
         "low"
     };
-    let fetched = data
-        .get("sample")
-        .and_then(|sample| sample.get("fetched"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let confidence = if fetched >= 100 {
+    let mut confidence = if fetched >= 100 {
         0.8
     } else if fetched >= 20 {
         0.65
@@ -790,6 +929,15 @@ fn update_risk(data: &mut Map<String, Value>) {
     } else {
         0.5
     };
+    if !unknown_reasons.is_empty() {
+        band = "unknown";
+        confidence = 0.35;
+        for reason in unknown_reasons {
+            if !reasons.iter().any(|existing| existing == &reason) {
+                reasons.push(reason);
+            }
+        }
+    }
 
     data.insert(
         "risk".to_string(),
@@ -830,12 +978,141 @@ fn add_share_risk(
     }
 }
 
+fn add_low_share_risk(
+    signals: &Value,
+    score: &mut i32,
+    reasons: &mut Vec<String>,
+    evidence: &mut Vec<String>,
+    section: &str,
+    key: &str,
+    thresholds: &[(f64, i32)],
+) {
+    let Some(value) = signals
+        .get(section)
+        .and_then(|section| section.get(key))
+        .and_then(Value::as_f64)
+    else {
+        return;
+    };
+
+    for (threshold, points) in thresholds {
+        if value <= *threshold {
+            *score += *points;
+            reasons.push(format!("{key}={value:.4}"));
+            evidence.push(format!("signals.{section}.{key}"));
+            break;
+        }
+    }
+}
+
+fn add_high_share_risk(
+    signals: &Value,
+    score: &mut i32,
+    reasons: &mut Vec<String>,
+    evidence: &mut Vec<String>,
+    section: &str,
+    key: &str,
+    thresholds: &[(f64, i32)],
+) {
+    let Some(value) = signals
+        .get(section)
+        .and_then(|section| section.get(key))
+        .and_then(Value::as_f64)
+    else {
+        return;
+    };
+
+    for (threshold, points) in thresholds.iter().rev() {
+        if value >= *threshold {
+            *score += *points;
+            reasons.push(format!("{key}={value:.4}"));
+            evidence.push(format!("signals.{section}.{key}"));
+            break;
+        }
+    }
+}
+
+fn add_low_commit_activity_risk(
+    data: &Map<String, Value>,
+    score: &mut i32,
+    reasons: &mut Vec<String>,
+    evidence: &mut Vec<String>,
+) {
+    let Some(commits_per_1k_stars) = data
+        .get("signals")
+        .and_then(|signals| signals.get("repo"))
+        .and_then(|repo| repo.get("commit_activity_per_1k_stars"))
+        .and_then(Value::as_f64)
+    else {
+        return;
+    };
+    let stars = data
+        .get("signals")
+        .and_then(|signals| signals.get("repo"))
+        .and_then(|repo| repo.get("stars"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let source = data
+        .get("signals")
+        .and_then(|signals| signals.get("repo"))
+        .and_then(|repo| repo.get("commit_activity_source"))
+        .and_then(Value::as_str);
+
+    if stars >= 1000 && source == Some("github_native_stats") && commits_per_1k_stars < 2.0 {
+        *score += 20;
+        reasons.push(format!(
+            "low_commit_activity_per_star={commits_per_1k_stars:.2}"
+        ));
+        evidence.push(
+            endpoint_for(data, "/stats/commit_activity")
+                .unwrap_or_else(|| "signals.repo.commit_activity_total_52w".to_string()),
+        );
+    }
+}
+
+fn endpoint_for(data: &Map<String, Value>, suffix: &str) -> Option<String> {
+    data.get("github_api")
+        .and_then(|api| api.get("endpoints"))
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|item| {
+            item.get("endpoint")
+                .or_else(|| item.get("path"))
+                .and_then(Value::as_str)
+        })
+        .find(|endpoint| endpoint.ends_with(suffix))
+        .map(ToString::to_string)
+}
+
 fn share(count: usize, total: usize) -> f64 {
     if total == 0 {
         0.0
     } else {
         count as f64 / total as f64
     }
+}
+
+fn ratio(count: u64, total: u64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        count as f64 / total as f64
+    }
+}
+
+fn per_1k_stars(count: u64, stars: u64) -> f64 {
+    ratio(count, stars) * 1000.0
+}
+
+fn commit_activity_totals(response: &GithubResponse) -> (u64, usize) {
+    let Some(weeks) = response.value.as_ref().and_then(Value::as_array) else {
+        return (0, 0);
+    };
+    let total = weeks
+        .iter()
+        .filter_map(|week| numeric_field(week, "total"))
+        .sum();
+    (total, weeks.len())
 }
 
 fn github_get_required(

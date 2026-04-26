@@ -337,7 +337,7 @@ pub fn run() -> ExitCode {
     let cli = Cli::parse();
     let json = cli.json;
 
-    let envelope = match cli.command {
+    let (envelope, github_audit_plain) = match cli.command {
         None => {
             // bare `research` with no subcommand: print help via clap and exit 0
             use clap::CommandFactory;
@@ -353,10 +353,17 @@ pub fn run() -> ExitCode {
             println!();
             return ExitCode::SUCCESS;
         }
-        Some(cmd) => dispatch(cmd),
+        Some(cmd) => {
+            let github_audit_plain = matches!(cmd, Commands::GithubAudit { .. });
+            (dispatch(cmd), github_audit_plain)
+        }
     };
 
-    envelope.render(json);
+    if github_audit_plain && !json {
+        commands::github_audit::render_plain_summary(&envelope);
+    } else {
+        envelope.render(json);
+    }
     if envelope.ok {
         ExitCode::SUCCESS
     } else {
