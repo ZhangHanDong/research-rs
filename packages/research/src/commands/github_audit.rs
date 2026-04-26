@@ -2,9 +2,11 @@ use chrono::{DateTime, Utc};
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::BTreeMap;
+use std::fs;
 
 use crate::fetch::postagent;
-use crate::output::{Envelope, not_implemented};
+use crate::output::Envelope;
 
 const CMD: &str = "research github-audit";
 const DEPTHS: &[&str] = &["repo", "stargazers", "timeline"];
@@ -95,20 +97,15 @@ pub fn run(repo: &str, depth: &str, sample: usize, out: Option<&str>) -> Envelop
         Err(envelope) => return envelope,
     };
 
-    if depth == "timeline" {
-        let _ = out;
-        if let Err(envelope) = probe_authenticated_github(&repo_input, depth) {
-            return envelope;
-        }
-        return not_implemented(CMD);
-    }
-
-    if depth == "stargazers" {
-        let _ = out;
+    let envelope = if depth == "timeline" {
+        collect_timeline_depth(&repo_input, sample)
+    } else if depth == "stargazers" {
         collect_stargazers_depth(&repo_input, sample)
     } else {
         collect_repo_depth(&repo_input)
-    }
+    };
+
+    write_out_if_requested(envelope, out)
 }
 
 fn parse_repo_input(input: &str) -> Result<RepoInput, Envelope> {
@@ -162,6 +159,25 @@ fn invalid_repo_input(input: &str) -> Envelope {
         "argument": "repo",
         "value": input,
     }))
+}
+
+fn write_out_if_requested(envelope: Envelope, out: Option<&str>) -> Envelope {
+    if !envelope.ok {
+        return envelope;
+    }
+    let Some(path) = out else {
+        return envelope;
+    };
+
+    match serde_json::to_string_pretty(&envelope)
+        .map_err(|err| err.to_string())
+        .and_then(|body| fs::write(path, body).map_err(|err| err.to_string()))
+    {
+        Ok(()) => envelope,
+        Err(message) => Envelope::fail(CMD, "OUTPUT_WRITE_FAILED", message).with_details(json!({
+            "path": path,
+        })),
+    }
 }
 
 fn collect_repo_depth(repo: &RepoInput) -> Envelope {
@@ -279,13 +295,22 @@ fn collect_repo_depth_with_auth(repo: &RepoInput, authenticated: bool) -> Envelo
         .and_then(|v| v.as_str())
         .map(ToString::to_string)
         .unwrap_or_else(|| format!("https://github.com/{}/{}", repo.owner, repo.repo));
+    let canonical_owner = repo_json
+        .get("owner")
+        .and_then(|v| v.get("login"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(&repo.owner);
+    let canonical_repo = repo_json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&repo.repo);
 
     Envelope::ok(
         CMD,
         json!({
             "repository": {
-                "owner": repo.owner,
-                "repo": repo.repo,
+                "owner": canonical_owner,
+                "repo": canonical_repo,
                 "html_url": html_url,
                 "stars": stars,
                 "forks": forks,
@@ -302,6 +327,7 @@ fn collect_repo_depth_with_auth(repo: &RepoInput, authenticated: bool) -> Envelo
                 "band": "low",
                 "confidence": 0.5,
                 "reasons": [],
+                "evidence": [],
             },
             "signals": {
                 "repo": {
@@ -371,18 +397,52 @@ fn collect_stargazers_depth(repo: &RepoInput, sample: usize) -> Envelope {
                 endpoints.extend(stargazers.endpoints);
             }
         }
+        update_risk(data);
     }
 
     envelope
 }
 
-fn probe_authenticated_github(repo: &RepoInput, depth: &str) -> Result<(), Envelope> {
-    let path = format!("/repos/{}/{}", repo.owner, repo.repo);
-    match github_get(&path, true, GITHUB_JSON_ACCEPT) {
-        Ok(_) => Ok(()),
-        Err(GithubFetchError::CredentialRequired) => Err(github_token_required(depth)),
-        Err(GithubFetchError::Other(_)) => Ok(()),
+fn collect_timeline_depth(repo: &RepoInput, sample: usize) -> Envelope {
+    let mut envelope = collect_repo_depth_with_auth(repo, true);
+    if !envelope.ok {
+        return with_auth_depth(envelope, "timeline");
     }
+
+    let stargazers = match collect_stargazers(repo, sample) {
+        Ok(stargazers) => stargazers,
+        Err(envelope) => return with_auth_depth(envelope, "timeline"),
+    };
+    let stargazer_signals = stargazer_signals(&stargazers.profiles);
+    let timeline_signals = timeline_signals(&stargazers, sample);
+
+    if let Some(data) = envelope.data.as_object_mut() {
+        data.insert("depth".to_string(), json!("timeline"));
+        data.insert(
+            "sample".to_string(),
+            json!({
+                "requested": sample,
+                "fetched": stargazers.samples.len(),
+                "pages": stargazers.pages,
+            }),
+        );
+        if let Some(signals) = data.get_mut("signals").and_then(Value::as_object_mut) {
+            signals.insert("stargazers".to_string(), stargazer_signals);
+            signals.insert("timeline".to_string(), timeline_signals);
+        }
+        if let Some(github_api) = data.get_mut("github_api").and_then(Value::as_object_mut) {
+            github_api.insert("authenticated".to_string(), json!(true));
+            if let Some(endpoints) = github_api
+                .get_mut("endpoints")
+                .and_then(Value::as_array_mut)
+            {
+                endpoints.extend(stargazers.endpoints);
+            }
+        }
+        update_risk(data);
+    }
+
+    envelope
 }
 
 fn collect_stargazers(repo: &RepoInput, sample: usize) -> Result<StargazerCollection, Envelope> {
@@ -407,6 +467,9 @@ fn collect_stargazers(repo: &RepoInput, sample: usize) -> Result<StargazerCollec
             Ok(page_samples) => page_samples,
             Err(envelope) => return Err(envelope),
         };
+        if page_samples.is_empty() {
+            break;
+        }
         for stargazer in page_samples {
             if samples.len() >= sample {
                 break;
@@ -555,6 +618,216 @@ fn stargazer_signals(profiles: &[StargazerProfile]) -> Value {
     }
 
     Value::Object(signals)
+}
+
+fn timeline_signals(stargazers: &StargazerCollection, requested: usize) -> Value {
+    let mut daily: BTreeMap<String, usize> = BTreeMap::new();
+    let mut hourly: BTreeMap<String, usize> = BTreeMap::new();
+    let mut starred_times = Vec::new();
+
+    for sample in &stargazers.samples {
+        let Some(starred_at) = sample.starred_at.as_deref() else {
+            continue;
+        };
+        let Ok(ts) = DateTime::parse_from_rfc3339(starred_at) else {
+            continue;
+        };
+        let ts = ts.with_timezone(&Utc);
+        *daily.entry(ts.format("%Y-%m-%d").to_string()).or_insert(0) += 1;
+        *hourly
+            .entry(ts.format("%Y-%m-%dT%H:00:00Z").to_string())
+            .or_insert(0) += 1;
+        starred_times.push(ts);
+    }
+    starred_times.sort_unstable();
+
+    let available = starred_times.len();
+    let max_daily_stars = daily.values().copied().max().unwrap_or(0);
+    let max_hourly_stars = hourly.values().copied().max().unwrap_or(0);
+    let max_24h_stars = max_window_count(&starred_times, 24 * 60 * 60);
+
+    let mut created_dates: BTreeMap<String, usize> = BTreeMap::new();
+    for profile in &stargazers.profiles {
+        if let Some(created_at) = profile.created_at {
+            *created_dates
+                .entry(created_at.format("%Y-%m-%d").to_string())
+                .or_insert(0) += 1;
+        }
+    }
+    let max_creation_date_count = created_dates.values().copied().max().unwrap_or(0);
+
+    json!({
+        "starred_at_available_count": available,
+        "starred_at_coverage": share(available, stargazers.samples.len()),
+        "sample_coverage": share(stargazers.samples.len(), requested),
+        "max_daily_stars": max_daily_stars,
+        "max_daily_star_share": share(max_daily_stars, available),
+        "max_hourly_stars": max_hourly_stars,
+        "max_hourly_star_share": share(max_hourly_stars, available),
+        "max_burst_window_hours": 24,
+        "max_burst_window_stars": max_24h_stars,
+        "max_burst_window_star_share": share(max_24h_stars, available),
+        "max_24h_stars": max_24h_stars,
+        "max_24h_star_share": share(max_24h_stars, available),
+        "account_creation_date_max_count": max_creation_date_count,
+        "account_creation_date_max_share": share(max_creation_date_count, stargazers.profiles.len()),
+    })
+}
+
+fn max_window_count(times: &[DateTime<Utc>], window_seconds: i64) -> usize {
+    let mut max_count = 0;
+    let mut end = 0;
+    for start in 0..times.len() {
+        while end < times.len() && (times[end] - times[start]).num_seconds() <= window_seconds {
+            end += 1;
+        }
+        max_count = max_count.max(end - start);
+    }
+    max_count
+}
+
+fn update_risk(data: &mut Map<String, Value>) {
+    let Some(signals) = data.get("signals") else {
+        return;
+    };
+
+    let mut score = 0;
+    let mut reasons = Vec::new();
+    let mut evidence = Vec::new();
+
+    add_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "stargazers",
+        "low_follower_share",
+        &[(0.70, 20), (0.40, 10)],
+    );
+    add_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "stargazers",
+        "zero_follower_share",
+        &[(0.50, 15), (0.25, 8)],
+    );
+    add_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "stargazers",
+        "zero_public_repos_share",
+        &[(0.50, 15), (0.25, 8)],
+    );
+    add_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "stargazers",
+        "empty_bio_share",
+        &[(0.60, 10), (0.35, 5)],
+    );
+    add_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "timeline",
+        "max_daily_star_share",
+        &[(0.60, 35), (0.35, 20)],
+    );
+    add_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "timeline",
+        "max_hourly_star_share",
+        &[(0.50, 25), (0.25, 12)],
+    );
+    add_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "timeline",
+        "max_24h_star_share",
+        &[(0.60, 20), (0.35, 10)],
+    );
+    add_share_risk(
+        signals,
+        &mut score,
+        &mut reasons,
+        &mut evidence,
+        "timeline",
+        "account_creation_date_max_share",
+        &[(0.60, 15), (0.35, 8)],
+    );
+
+    score = score.min(100);
+    let band = if score >= 70 {
+        "high"
+    } else if score >= 30 {
+        "medium"
+    } else {
+        "low"
+    };
+    let fetched = data
+        .get("sample")
+        .and_then(|sample| sample.get("fetched"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let confidence = if fetched >= 100 {
+        0.8
+    } else if fetched >= 20 {
+        0.65
+    } else if fetched > 0 {
+        0.45
+    } else {
+        0.5
+    };
+
+    data.insert(
+        "risk".to_string(),
+        json!({
+            "score": score,
+            "band": band,
+            "confidence": confidence,
+            "reasons": reasons,
+            "evidence": evidence,
+        }),
+    );
+}
+
+fn add_share_risk(
+    signals: &Value,
+    score: &mut i32,
+    reasons: &mut Vec<String>,
+    evidence: &mut Vec<String>,
+    section: &str,
+    key: &str,
+    thresholds: &[(f64, i32)],
+) {
+    let Some(value) = signals
+        .get(section)
+        .and_then(|section| section.get(key))
+        .and_then(Value::as_f64)
+    else {
+        return;
+    };
+
+    for (threshold, points) in thresholds {
+        if value >= *threshold {
+            *score += *points;
+            reasons.push(format!("{key}={value:.2}"));
+            evidence.push(format!("signals.{section}.{key}"));
+            break;
+        }
+    }
 }
 
 fn share(count: usize, total: usize) -> f64 {
@@ -791,7 +1064,7 @@ fn validate_repo_response(response: &GithubResponse, repo: &RepoInput) -> Result
         .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or(&repo.repo);
-    if owner != repo.owner || name != repo.repo {
+    if !owner.eq_ignore_ascii_case(&repo.owner) || !name.eq_ignore_ascii_case(&repo.repo) {
         return Err(invalid_github_shape(
             &response.endpoint,
             "repository identity did not match requested owner/repo",

@@ -82,6 +82,10 @@ impl Env {
     fn postagent_log(&self) -> String {
         fs::read_to_string(&self.postagent_log).unwrap_or_default()
     }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self._tmp.path().join(name)
+    }
 }
 
 fn fake_github_postagent() -> String {
@@ -241,6 +245,175 @@ case "$*" in
 esac
 
 printf '%s\n' "unexpected anonymous request: $*" >&2
+exit 1
+"#
+    .to_string()
+}
+
+fn fake_github_postagent_timeline_burst() -> String {
+    r#"#!/bin/sh
+if [ -n "$POSTAGENT_REQUEST_LOG" ]; then
+  printf '%s\n' "$*" >> "$POSTAGENT_REQUEST_LOG"
+fi
+
+case "$*" in
+  *"/repos/owner/repo/stargazers?per_page=100&page=1"*)
+    printf '['
+    i=1
+    while [ "$i" -le 100 ]; do
+      if [ "$i" -gt 1 ]; then printf ','; fi
+      if [ "$i" -le 60 ]; then
+        starred_at='2024-03-01T12:00:00Z'
+      else
+        starred_at='2024-04-01T09:00:00Z'
+      fi
+      printf '{"starred_at":"%s","user":{"login":"u%s"}}' "$starred_at" "$i"
+      i=$((i + 1))
+    done
+    printf ']\n'
+    exit 0 ;;
+  *"/users/u"*)
+    login=$(printf '%s\n' "$*" | sed 's#.*https://api.github.com/users/\([^ ]*\).*#\1#')
+    printf '{"login":"%s","created_at":"2024-02-01T00:00:00Z","followers":0,"public_repos":0,"bio":""}\n' "$login"
+    exit 0 ;;
+  *"/repos/owner/repo/traffic/"*)
+    printf '%s\n' '⚠ 403 — endpoint requires authorization at https://api.github.com/repos/owner/repo/traffic' >&2
+    printf '%s\n' 'HTTP 403 Forbidden' >&2
+    exit 0 ;;
+  *"/repos/owner/repo/contributors"*)
+    cat <<'JSON'
+[{"login":"owner"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/subscribers"*)
+    cat <<'JSON'
+[]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stats/commit_activity"*)
+    cat <<'JSON'
+[{"week":1711843200,"total":1}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stats/contributors"*)
+    cat <<'JSON'
+[{"total":1,"author":{"login":"owner"}}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo"*)
+    cat <<'JSON'
+{"name":"repo","full_name":"owner/repo","owner":{"login":"owner"},"html_url":"https://github.com/owner/repo","stargazers_count":100,"forks_count":1,"open_issues_count":1}
+JSON
+    exit 0 ;;
+esac
+
+printf '%s\n' "unexpected request: $*" >&2
+exit 1
+"#
+    .to_string()
+}
+
+fn fake_github_postagent_uppercase_repo() -> String {
+    r#"#!/bin/sh
+if [ -n "$POSTAGENT_REQUEST_LOG" ]; then
+  printf '%s\n' "$*" >> "$POSTAGENT_REQUEST_LOG"
+fi
+
+case "$*" in
+  *"/repos/Dagster-IO/Dagster/traffic/"*)
+    printf '%s\n' '⚠ 403 — endpoint requires authorization at https://api.github.com/repos/Dagster-IO/Dagster/traffic' >&2
+    printf '%s\n' 'HTTP 403 Forbidden' >&2
+    exit 0 ;;
+  *"/repos/Dagster-IO/Dagster/contributors"*)
+    cat <<'JSON'
+[{"login":"alice"}]
+JSON
+    exit 0 ;;
+  *"/repos/Dagster-IO/Dagster/subscribers"*)
+    cat <<'JSON'
+[]
+JSON
+    exit 0 ;;
+  *"/repos/Dagster-IO/Dagster/stats/commit_activity"*)
+    cat <<'JSON'
+[{"week":1711843200,"total":42}]
+JSON
+    exit 0 ;;
+  *"/repos/Dagster-IO/Dagster/stats/contributors"*)
+    cat <<'JSON'
+[{"total":100,"author":{"login":"alice"}}]
+JSON
+    exit 0 ;;
+  *"/repos/Dagster-IO/Dagster"*)
+    cat <<'JSON'
+{"name":"dagster","full_name":"dagster-io/dagster","owner":{"login":"dagster-io"},"html_url":"https://github.com/dagster-io/dagster","stargazers_count":12345,"forks_count":2100,"open_issues_count":321}
+JSON
+    exit 0 ;;
+esac
+
+printf '%s\n' "unexpected request: $*" >&2
+exit 1
+"#
+    .to_string()
+}
+
+fn fake_github_postagent_empty_stargazer_page() -> String {
+    r#"#!/bin/sh
+if [ -n "$POSTAGENT_REQUEST_LOG" ]; then
+  printf '%s\n' "$*" >> "$POSTAGENT_REQUEST_LOG"
+fi
+
+case "$*" in
+  *"/repos/owner/repo/stargazers?per_page=100&page=1"*)
+    cat <<'JSON'
+[{"starred_at":"2024-01-01T00:00:00Z","user":{"login":"u1"}}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stargazers?per_page=100&page=2"*)
+    cat <<'JSON'
+[]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stargazers?per_page=100&page=3"*)
+    printf '%s\n' 'page 3 should not be requested' >&2
+    exit 1 ;;
+  *"/users/u1"*)
+    cat <<'JSON'
+{"login":"u1","created_at":"2023-01-01T00:00:00Z","followers":2,"public_repos":1,"bio":"ok"}
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/traffic/"*)
+    printf '%s\n' '⚠ 403 — endpoint requires authorization at https://api.github.com/repos/owner/repo/traffic' >&2
+    printf '%s\n' 'HTTP 403 Forbidden' >&2
+    exit 0 ;;
+  *"/repos/owner/repo/contributors"*)
+    cat <<'JSON'
+[{"login":"owner"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/subscribers"*)
+    cat <<'JSON'
+[]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stats/commit_activity"*)
+    cat <<'JSON'
+[{"week":1711843200,"total":1}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stats/contributors"*)
+    cat <<'JSON'
+[{"total":1,"author":{"login":"owner"}}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo"*)
+    cat <<'JSON'
+{"name":"repo","full_name":"owner/repo","owner":{"login":"owner"},"html_url":"https://github.com/owner/repo","stargazers_count":10,"forks_count":2,"open_issues_count":1}
+JSON
+    exit 0 ;;
+esac
+
+printf '%s\n' "unexpected request: $*" >&2
 exit 1
 "#
     .to_string()
@@ -515,7 +688,7 @@ fn github_audit_default_depth_and_sample() {
     let (v, stdout, stderr, code) = env.research_with_postagent_env(
         &["--json", "github-audit", "dagster-io/dagster"],
         Some(&postagent),
-        &[("POSTAGENT_GITHUB_TOKEN", "secret-token")],
+        &[],
     );
 
     assert_eq!(code, 0, "{v:#?}\nstdout={stdout}\nstderr={stderr}");
@@ -546,9 +719,150 @@ fn github_audit_default_depth_and_sample() {
     assert!(log.contains("application/vnd.github.star+json"));
     assert!(log.contains("application/vnd.github+json"));
     assert!(log.contains("$POSTAGENT.GITHUB.TOKEN"));
-    assert!(!log.contains("secret-token"));
-    assert!(!stdout.contains("secret-token"));
-    assert!(!stderr.contains("secret-token"));
+    assert!(!stdout.contains("Authorization"));
+    assert!(!stderr.contains("Authorization"));
+}
+
+#[test]
+fn github_audit_timeline_computes_burst_signals() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent_timeline_burst());
+
+    let (v, stdout, stderr, code) = env.research_with_postagent_env(
+        &[
+            "--json",
+            "github-audit",
+            "owner/repo",
+            "--depth",
+            "timeline",
+            "--sample",
+            "100",
+        ],
+        Some(&postagent),
+        &[],
+    );
+
+    assert_eq!(code, 0, "{v:#?}\nstdout={stdout}\nstderr={stderr}");
+    assert_eq!(v["data"]["depth"], "timeline");
+    assert_eq!(v["data"]["sample"]["requested"], 100);
+    assert_eq!(v["data"]["sample"]["fetched"], 100);
+    assert_eq!(
+        v["data"]["signals"]["timeline"]["starred_at_available_count"],
+        100
+    );
+    assert!(
+        v["data"]["signals"]["timeline"]["max_daily_star_share"]
+            .as_f64()
+            .unwrap()
+            >= 0.60
+    );
+    assert!(
+        v["data"]["signals"]["timeline"]["max_hourly_star_share"]
+            .as_f64()
+            .unwrap()
+            >= 0.60
+    );
+    assert!(
+        v["data"]["signals"]["timeline"]["max_24h_star_share"]
+            .as_f64()
+            .unwrap()
+            >= 0.60
+    );
+    assert!(v["data"]["risk"]["score"].as_i64().unwrap() > 0);
+    assert_ne!(v["data"]["risk"]["band"], "low");
+    assert!(
+        v["data"]["risk"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason
+                .as_str()
+                .unwrap()
+                .starts_with("max_daily_star_share="))
+    );
+    let log = env.postagent_log();
+    assert!(log.contains("$POSTAGENT.GITHUB.TOKEN"));
+    assert!(!stdout.contains("Authorization"));
+    assert!(!stderr.contains("Authorization"));
+}
+
+#[test]
+fn github_audit_out_writes_full_envelope() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent());
+    let out_path = env.path("audit.json");
+    let out_arg = out_path.to_string_lossy().into_owned();
+
+    let (v, _, _, code) = env.research_with_postagent(
+        &[
+            "--json",
+            "github-audit",
+            "dagster-io/dagster",
+            "--depth",
+            "repo",
+            "--out",
+            &out_arg,
+        ],
+        Some(&postagent),
+    );
+
+    assert_eq!(code, 0, "{v:#?}");
+    let written: Value = serde_json::from_str(&fs::read_to_string(out_path).unwrap()).unwrap();
+    assert_eq!(written["ok"], true);
+    assert_eq!(written["command"], "research github-audit");
+    assert_eq!(written["data"]["depth"], "repo");
+    assert_eq!(written["data"]["repository"]["owner"], "dagster-io");
+    assert_eq!(written["data"]["risk"], v["data"]["risk"]);
+}
+
+#[test]
+fn github_audit_uppercase_input_accepts_canonical_repo_response() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent_uppercase_repo());
+
+    let (v, _, _, code) = env.research_with_postagent(
+        &[
+            "--json",
+            "github-audit",
+            "Dagster-IO/Dagster",
+            "--depth",
+            "repo",
+        ],
+        Some(&postagent),
+    );
+
+    assert_eq!(code, 0, "{v:#?}");
+    assert_eq!(v["data"]["repository"]["owner"], "dagster-io");
+    assert_eq!(v["data"]["repository"]["repo"], "dagster");
+}
+
+#[test]
+fn github_audit_empty_stargazer_page_stops_pagination() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent_empty_stargazer_page());
+
+    let (v, _, stderr, code) = env.research_with_postagent_env(
+        &[
+            "--json",
+            "github-audit",
+            "owner/repo",
+            "--depth",
+            "stargazers",
+            "--sample",
+            "300",
+        ],
+        Some(&postagent),
+        &[],
+    );
+
+    assert_eq!(code, 0, "{v:#?}\nstderr={stderr}");
+    assert_eq!(v["data"]["sample"]["requested"], 300);
+    assert_eq!(v["data"]["sample"]["fetched"], 1);
+    assert_eq!(v["data"]["sample"]["pages"], 2);
+    let log = env.postagent_log();
+    assert!(log.contains("page=1"));
+    assert!(log.contains("page=2"));
+    assert!(!log.contains("page=3"));
 }
 
 #[test]
