@@ -27,6 +27,12 @@ struct EndpointRecord {
     body_bytes: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatsAvailability {
+    Available,
+    Pending,
+}
+
 pub fn run(repo: &str, depth: &str, sample: usize, out: Option<&str>) -> Envelope {
     if !DEPTHS.contains(&depth) {
         return Envelope::fail(
@@ -161,10 +167,19 @@ fn collect_repo_depth(repo: &RepoInput) -> Envelope {
         Ok(count) => count,
         Err(envelope) => return envelope,
     };
-    let commit_activity_available = match validate_stats_response(&commit_activity_response) {
-        Ok(available) => available,
+    let commit_activity_availability = match classify_stats_response(&commit_activity_response) {
+        Ok(availability) => availability,
         Err(envelope) => return envelope,
     };
+    let stats_contributors_availability =
+        match classify_stats_response(&stats_contributors_response) {
+            Ok(availability) => availability,
+            Err(envelope) => return envelope,
+        };
+
+    if let Err(envelope) = validate_stats_response(&commit_activity_response) {
+        return envelope;
+    }
     if let Err(envelope) = validate_stats_response(&stats_contributors_response) {
         return envelope;
     }
@@ -179,11 +194,13 @@ fn collect_repo_depth(repo: &RepoInput) -> Envelope {
         &mut endpoints,
         &mut unavailable,
         &commit_activity_response.endpoint,
+        commit_activity_availability,
     );
     push_stats_record(
         &mut endpoints,
         &mut unavailable,
         &stats_contributors_response.endpoint,
+        stats_contributors_availability,
     );
     for path in [
         format!("{repo_path}/traffic/views"),
@@ -201,9 +218,9 @@ fn collect_repo_depth(repo: &RepoInput) -> Envelope {
         }
     }
 
-    let commit_activity_source = if commit_activity_available {
+    let commit_activity_source = if commit_activity_availability == StatsAvailability::Available {
         "github_native_stats"
-    } else if commit_activity_response.endpoint.status == Some(202) {
+    } else if commit_activity_availability == StatsAvailability::Pending {
         "stats_pending"
     } else {
         "unavailable"
@@ -373,16 +390,11 @@ fn push_stats_record(
     endpoints: &mut Vec<Value>,
     unavailable: &mut Vec<Value>,
     record: &EndpointRecord,
+    availability: StatsAvailability,
 ) {
-    if record.status == Some(200) {
-        endpoints.push(endpoint_json(record));
-    } else {
-        let reason = if record.status == Some(202) {
-            "stats_pending"
-        } else {
-            "unavailable"
-        };
-        unavailable.push(unavailable_json(record, reason));
+    match availability {
+        StatsAvailability::Available => endpoints.push(endpoint_json(record)),
+        StatsAvailability::Pending => unavailable.push(unavailable_json(record, "stats_pending")),
     }
 }
 
@@ -437,19 +449,16 @@ fn validate_array_response(response: &GithubResponse, name: &str) -> Result<usiz
     }
 }
 
-fn validate_stats_response(response: &GithubResponse) -> Result<bool, Envelope> {
+fn classify_stats_response(response: &GithubResponse) -> Result<StatsAvailability, Envelope> {
     match response.endpoint.status {
         Some(200) => {
             if response.value.as_ref().is_some_and(|v| v.is_array()) {
-                Ok(true)
+                Ok(StatsAvailability::Available)
             } else {
-                Err(invalid_github_shape(
-                    &response.endpoint,
-                    "stats response must be a JSON array",
-                ))
+                Ok(StatsAvailability::Pending)
             }
         }
-        Some(202) => Ok(false),
+        Some(202) => Ok(StatsAvailability::Pending),
         _ => Err(
             Envelope::fail(CMD, "GITHUB_API_ERROR", "GitHub stats API request failed")
                 .with_details(json!({
@@ -458,6 +467,10 @@ fn validate_stats_response(response: &GithubResponse) -> Result<bool, Envelope> 
                 })),
         ),
     }
+}
+
+fn validate_stats_response(response: &GithubResponse) -> Result<(), Envelope> {
+    classify_stats_response(response).map(|_| ())
 }
 
 fn invalid_github_shape(record: &EndpointRecord, message: impl Into<String>) -> Envelope {

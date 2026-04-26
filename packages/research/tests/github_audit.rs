@@ -219,6 +219,51 @@ exit 0
     .to_string()
 }
 
+fn fake_github_postagent_pending_stats_body() -> String {
+    r#"#!/bin/sh
+if [ -n "$POSTAGENT_REQUEST_LOG" ]; then
+  printf '%s\n' "$*" >> "$POSTAGENT_REQUEST_LOG"
+fi
+
+case "$*" in
+  *"/repos/owner/repo/stats/commit_activity"*)
+    cat <<'JSON'
+{"message":"Statistics are being generated, try again later."}
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stats/contributors"*)
+    cat <<'JSON'
+[{"total":1,"author":{"login":"owner"}}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/contributors"*)
+    cat <<'JSON'
+[{"login":"owner"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/subscribers"*)
+    cat <<'JSON'
+[{"login":"watcher"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/traffic/"*)
+    printf '%s\n' '⚠ 403 — endpoint requires authorization at https://api.github.com/repos/owner/repo/traffic' >&2
+    printf '%s\n' 'HTTP 403 Forbidden' >&2
+    exit 0 ;;
+  *"/repos/owner/repo"*)
+    cat <<'JSON'
+{"name":"repo","full_name":"owner/repo","owner":{"login":"owner"},"html_url":"https://github.com/owner/repo","stargazers_count":10,"forks_count":2,"open_issues_count":1}
+JSON
+    exit 0 ;;
+esac
+
+printf '%s\n' "⚠ 404 — endpoint does not exist at $2" >&2
+printf '%s\n' 'HTTP 404 Not Found' >&2
+exit 0
+"#
+    .to_string()
+}
+
 fn array_contains_endpoint(items: &Value, suffix: &str) -> bool {
     items.as_array().unwrap().iter().any(|item| {
         item["endpoint"]
@@ -423,4 +468,25 @@ fn github_audit_malformed_repo_json_fails() {
 
     assert_ne!(code, 0);
     assert_eq!(v["error"]["code"], "GITHUB_API_ERROR");
+}
+
+#[test]
+fn github_audit_treats_stats_object_body_as_pending() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent_pending_stats_body());
+
+    let (v, _, _, code) = env.research_with_postagent(
+        &["--json", "github-audit", "owner/repo", "--depth", "repo"],
+        Some(&postagent),
+    );
+
+    assert_eq!(code, 0, "{v:#?}");
+    assert_ne!(
+        v["data"]["signals"]["repo"]["commit_activity_source"],
+        "github_native_stats"
+    );
+    assert!(array_contains_endpoint(
+        &v["data"]["github_api"]["unavailable"],
+        "/stats/commit_activity"
+    ));
 }
