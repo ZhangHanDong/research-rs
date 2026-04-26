@@ -62,6 +62,7 @@ struct EndpointRecord {
 enum StatsAvailability {
     Available,
     Pending,
+    Unavailable,
 }
 
 pub fn run(repo: &str, depth: &str, sample: usize, out: Option<&str>) -> Envelope {
@@ -1156,24 +1157,12 @@ fn github_get_stats(
     authenticated: bool,
     accept: &str,
 ) -> Result<GithubResponse, Envelope> {
-    let response = github_get(path, authenticated, accept).map_err(|err| match err {
+    github_get(path, authenticated, accept).map_err(|err| match err {
         GithubFetchError::CredentialRequired => github_token_required_without_depth(),
         GithubFetchError::Other(message) => {
             Envelope::fail(CMD, "FETCH_FAILED", message).with_details(json!({ "path": path }))
         }
-    })?;
-
-    if matches!(response.endpoint.status, Some(200) | Some(202)) {
-        Ok(response)
-    } else {
-        Err(
-            Envelope::fail(CMD, "GITHUB_API_ERROR", "GitHub stats API request failed")
-                .with_details(json!({
-                    "path": response.endpoint.path,
-                    "status": response.endpoint.status,
-                })),
-        )
-    }
+    })
 }
 
 fn github_get_optional(
@@ -1307,6 +1296,7 @@ fn push_stats_record(
     match availability {
         StatsAvailability::Available => endpoints.push(endpoint_json(record)),
         StatsAvailability::Pending => unavailable.push(unavailable_json(record, "stats_pending")),
+        StatsAvailability::Unavailable => unavailable.push(unavailable_json(record, "unavailable")),
     }
 }
 
@@ -1371,13 +1361,7 @@ fn classify_stats_response(response: &GithubResponse) -> Result<StatsAvailabilit
             }
         }
         Some(202) => Ok(StatsAvailability::Pending),
-        _ => Err(
-            Envelope::fail(CMD, "GITHUB_API_ERROR", "GitHub stats API request failed")
-                .with_details(json!({
-                    "path": response.endpoint.path,
-                    "status": response.endpoint.status,
-                })),
-        ),
+        _ => Ok(StatsAvailability::Unavailable),
     }
 }
 

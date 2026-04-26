@@ -507,6 +507,48 @@ exit 0
     .to_string()
 }
 
+fn fake_github_postagent_stats_unavailable() -> String {
+    r#"#!/bin/sh
+if [ -n "$POSTAGENT_REQUEST_LOG" ]; then
+  printf '%s\n' "$*" >> "$POSTAGENT_REQUEST_LOG"
+fi
+
+case "$*" in
+  *"/repos/owner/repo/stats/commit_activity"*)
+    printf '%s\n' '⚠ 500 — stats unavailable at https://api.github.com/repos/owner/repo/stats/commit_activity' >&2
+    printf '%s\n' 'HTTP 500 Internal Server Error' >&2
+    exit 0 ;;
+  *"/repos/owner/repo/stats/contributors"*)
+    printf '%s\n' '⚠ 403 — stats unavailable at https://api.github.com/repos/owner/repo/stats/contributors' >&2
+    printf '%s\n' 'HTTP 403 Forbidden' >&2
+    exit 0 ;;
+  *"/repos/owner/repo/traffic/"*)
+    printf '%s\n' '⚠ 403 — endpoint requires authorization at https://api.github.com/repos/owner/repo/traffic' >&2
+    printf '%s\n' 'HTTP 403 Forbidden' >&2
+    exit 0 ;;
+  *"/repos/owner/repo/contributors"*)
+    cat <<'JSON'
+[{"login":"owner"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/subscribers"*)
+    cat <<'JSON'
+[{"login":"watcher"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo"*)
+    cat <<'JSON'
+{"name":"repo","full_name":"owner/repo","owner":{"login":"owner"},"html_url":"https://github.com/owner/repo","stargazers_count":10,"forks_count":2,"open_issues_count":1}
+JSON
+    exit 0 ;;
+esac
+
+printf '%s\n' "unexpected request: $*" >&2
+exit 1
+"#
+    .to_string()
+}
+
 fn fake_github_postagent_malformed_repo() -> String {
     r#"#!/bin/sh
 if [ -n "$POSTAGENT_REQUEST_LOG" ]; then
@@ -1110,6 +1152,53 @@ fn github_audit_treats_stats_202_and_traffic_429_as_unavailable() {
         &v["data"]["github_api"]["endpoints"],
         "/traffic/views"
     ));
+}
+
+#[test]
+fn github_audit_stats_unavailable_returns_unknown() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent_stats_unavailable());
+
+    let (v, _, _, code) = env.research_with_postagent(
+        &["--json", "github-audit", "owner/repo", "--depth", "repo"],
+        Some(&postagent),
+    );
+
+    assert_eq!(code, 0, "{v:#?}");
+    assert_eq!(
+        v["data"]["signals"]["repo"]["commit_activity_source"],
+        "unavailable"
+    );
+    assert_eq!(v["data"]["risk"]["band"], "unknown");
+    assert!(
+        v["data"]["risk"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "github_stats_unavailable")
+    );
+    assert!(array_contains_endpoint(
+        &v["data"]["github_api"]["unavailable"],
+        "/stats/commit_activity"
+    ));
+    assert_eq!(
+        endpoint_status(
+            &v["data"]["github_api"]["unavailable"],
+            "/stats/commit_activity"
+        ),
+        Some(500)
+    );
+    assert!(array_contains_endpoint(
+        &v["data"]["github_api"]["unavailable"],
+        "/stats/contributors"
+    ));
+    assert_eq!(
+        endpoint_status(
+            &v["data"]["github_api"]["unavailable"],
+            "/stats/contributors"
+        ),
+        Some(403)
+    );
 }
 
 #[test]
