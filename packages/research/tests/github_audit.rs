@@ -999,6 +999,17 @@ fn github_audit_timeline_computes_burst_signals() {
 }
 
 #[test]
+fn skill_recommends_github_audit_for_trust_reports() {
+    let skill_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../skills/ascent-research/SKILL.md");
+    let skill = std::fs::read_to_string(skill_path).unwrap();
+    assert!(skill.contains("ascent-research github-audit"));
+    assert!(skill.contains("--preset github-trust"));
+    assert!(skill.contains("ascent-research finish"));
+    assert!(skill.contains("risk score"));
+}
+
+#[test]
 fn github_audit_out_writes_full_envelope() {
     let env = Env::new();
     let postagent = env.write_fake_bin("postagent", &fake_github_postagent());
