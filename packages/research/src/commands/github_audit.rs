@@ -149,6 +149,19 @@ pub fn render_plain_summary(envelope: &Envelope) {
         .get("confidence")
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
+    let trust = data.get("trust").unwrap_or(&Value::Null);
+    let trust_score = trust
+        .get("score")
+        .and_then(Value::as_i64)
+        .unwrap_or(100 - score);
+    let trust_band = trust
+        .get("band")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let evidence_status = risk
+        .get("evidence_status")
+        .and_then(Value::as_str)
+        .unwrap_or("complete");
     let reasons = risk
         .get("reasons")
         .and_then(Value::as_array)
@@ -164,7 +177,10 @@ pub fn render_plain_summary(envelope: &Envelope) {
 
     println!("repo: {owner}/{repo}");
     println!("depth: {depth}");
-    println!("risk: score={score} band={band} confidence={confidence:.2}");
+    println!("trust: score={trust_score} band={trust_band}");
+    println!(
+        "risk: score={score} band={band} confidence={confidence:.2} evidence_status={evidence_status}"
+    );
     println!("reasons: {reasons}");
     if let Some(path) = data.get("out").and_then(Value::as_str) {
         println!("out: {path}");
@@ -286,10 +302,14 @@ fn render_html_report(data: &Value) -> String {
     let score = i64_path(data, &["risk", "score"])
         .unwrap_or(0)
         .clamp(0, 100);
-    let band = text_path(data, &["risk", "band"], "unknown");
     let confidence = f64_path(data, &["risk", "confidence"])
         .unwrap_or(0.0)
         .clamp(0.0, 1.0);
+    let evidence_status = text_path(data, &["risk", "evidence_status"], "complete");
+    let trust_score = i64_path(data, &["trust", "score"])
+        .unwrap_or(100 - score)
+        .clamp(0, 100);
+    let trust_band = text_path(data, &["trust", "band"], "unknown");
     let reasons = string_array_path(data, &["risk", "reasons"]);
     let evidence = string_array_path(data, &["risk", "evidence"]);
     let sample_requested = u64_path(data, &["sample", "requested"]).unwrap_or(0);
@@ -302,6 +322,11 @@ fn render_html_report(data: &Value) -> String {
         .unwrap_or_default();
 
     let metrics = vec![
+        Metric::score(
+            "trust.score",
+            trust_score as f64 / 100.0,
+            format!("{trust_score}/100"),
+        ),
         Metric::score("risk.score", score as f64 / 100.0, format!("{score}/100")),
         Metric::score("risk.confidence", confidence, format!("{confidence:.2}")),
         Metric::share(
@@ -406,20 +431,23 @@ code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 <div class="eyebrow">GitHub Trust Audit</div>
 <h1>{}/{}</h1>
 <p>This report is a deterministic scorecard for repository trust signals. It measures star-growth concentration, sampled stargazer quality signals, repository ratios, GitHub-native stats availability, and confidence. <strong>Not a fake/real verdict.</strong></p>
-<p class="note"><strong>unknown means evidence is incomplete</strong>: the score can still be high, but missing or pending GitHub-native statistics prevent a final risk band.</p>
+<p class="note"><strong>partial evidence means some GitHub-native checks are incomplete</strong>: the trust score is still shown, but confidence is reduced until those checks resolve.</p>
 </div>
 <div class="card">
-<div class="eyebrow">Risk score</div>
-<div class="score risk-score-value">{score}</div>
+<div class="eyebrow">Trust score</div>
+<div class="score trust-score-value">{trust_score}</div>
 <div class="band">{}</div>
+<p>Risk score: <strong class="risk-score-value">{score}</strong></p>
 <p>Confidence: <strong class="confidence-value">{confidence:.2}</strong></p>
+<p>Evidence status: <strong>{}</strong></p>
 <p>Depth: <strong>{}</strong></p>
 </div>
 </section>
 "#,
         html_escape(owner),
         html_escape(repo),
-        html_escape(band),
+        html_escape(trust_band),
+        html_escape(evidence_status),
         html_escape(depth)
     )
     .unwrap();
@@ -547,10 +575,7 @@ impl Metric {
 
     fn display_value(&self) -> String {
         match (self.value, self.score_style) {
-            (Some(value), true) if self.key == "risk.score" => {
-                self.detail.clone().unwrap_or_else(|| format!("{value:.2}"))
-            }
-            (Some(value), true) => format!("{value:.2}"),
+            (Some(value), true) => self.detail.clone().unwrap_or_else(|| format!("{value:.2}")),
             (Some(value), false) => format!("{value:.4} ({:.1}%)", value * 100.0),
             (None, _) => "n/a".to_string(),
         }
@@ -611,6 +636,7 @@ fn metric_explanation(key: &str) -> &'static str {
         "risk.score" => {
             "Composite deterministic risk score, 0 is lowest observed risk and 100 is highest."
         }
+        "trust.score" => "Human-facing repository trust score, 100 is highest observed trust.",
         "risk.confidence" => {
             "How complete the evidence chain is; low confidence means re-run or collect missing stats."
         }
@@ -1297,15 +1323,8 @@ fn update_risk(data: &mut Map<String, Value>) {
         "zero_public_repos_share",
         &[(0.50, 15), (0.25, 8)],
     );
-    add_share_risk(
-        signals,
-        &mut score,
-        &mut reasons,
-        &mut evidence,
-        "stargazers",
-        "empty_bio_share",
-        &[(0.60, 10), (0.35, 5)],
-    );
+    // Empty bios are common on otherwise legitimate GitHub accounts, so this
+    // remains a displayed context metric rather than a scoring penalty.
     add_share_risk(
         signals,
         &mut score,
@@ -1313,7 +1332,7 @@ fn update_risk(data: &mut Map<String, Value>) {
         &mut evidence,
         "timeline",
         "max_daily_star_share",
-        &[(0.60, 35), (0.35, 20)],
+        &[(0.80, 20), (0.60, 12), (0.35, 5)],
     );
     add_share_risk(
         signals,
@@ -1331,7 +1350,7 @@ fn update_risk(data: &mut Map<String, Value>) {
         &mut evidence,
         "timeline",
         "max_24h_star_share",
-        &[(0.60, 20), (0.35, 10)],
+        &[(0.90, 15), (0.70, 5), (0.35, 3)],
     );
     if reasons.iter().any(|reason| {
         reason.starts_with("max_daily_star_share=")
@@ -1366,8 +1385,13 @@ fn update_risk(data: &mut Map<String, Value>) {
         unknown_reasons.push("insufficient_sample".to_string());
     }
 
+    if is_uncorroborated_star_burst(&reasons) {
+        score = score.min(10);
+        push_unique_reason(&mut reasons, "uncorroborated_star_burst_cap");
+    }
+
     score = score.min(100);
-    let mut band = if score >= 70 {
+    let band = if score >= 70 {
         "high"
     } else if score >= 30 {
         "medium"
@@ -1383,15 +1407,25 @@ fn update_risk(data: &mut Map<String, Value>) {
     } else {
         0.5
     };
-    if !unknown_reasons.is_empty() {
-        band = "unknown";
+    let evidence_status = if unknown_reasons.is_empty() {
+        "complete"
+    } else {
         confidence = 0.35;
         for reason in unknown_reasons {
             if !reasons.iter().any(|existing| existing == &reason) {
                 reasons.push(reason);
             }
         }
-    }
+        "partial"
+    };
+    let trust_score = (100 - score).clamp(0, 100);
+    let trust_band = if trust_score >= 80 {
+        "high"
+    } else if trust_score >= 60 {
+        "medium"
+    } else {
+        "low"
+    };
 
     data.insert(
         "risk".to_string(),
@@ -1399,10 +1433,42 @@ fn update_risk(data: &mut Map<String, Value>) {
             "score": score,
             "band": band,
             "confidence": confidence,
+            "evidence_status": evidence_status,
             "reasons": reasons,
             "evidence": evidence,
         }),
     );
+    data.insert(
+        "trust".to_string(),
+        json!({
+            "score": trust_score,
+            "band": trust_band,
+            "confidence": confidence,
+            "evidence_status": evidence_status,
+        }),
+    );
+}
+
+fn is_uncorroborated_star_burst(reasons: &[String]) -> bool {
+    let has_burst = reasons.iter().any(|reason| {
+        reason == "star_burst"
+            || reason.starts_with("max_daily_star_share=")
+            || reason.starts_with("max_hourly_star_share=")
+            || reason.starts_with("max_24h_star_share=")
+    });
+    let has_corroboration = reasons.iter().any(|reason| {
+        reason.starts_with("fork_star_ratio=")
+            || reason.starts_with("subscriber_star_ratio=")
+            || reason.starts_with("contributors_star_ratio=")
+            || reason.starts_with("issue_star_ratio=")
+            || reason.starts_with("low_commit_activity_per_star=")
+            || reason.starts_with("low_follower_share=")
+            || reason.starts_with("zero_follower_share=")
+            || reason.starts_with("zero_public_repos_share=")
+            || reason.starts_with("account_creation_date_max_share=")
+    });
+
+    has_burst && !has_corroboration
 }
 
 fn add_share_risk(

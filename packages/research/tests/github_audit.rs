@@ -311,6 +311,72 @@ exit 1
     .to_string()
 }
 
+fn fake_github_postagent_organic_launch_burst() -> String {
+    r#"#!/bin/sh
+if [ -n "$POSTAGENT_REQUEST_LOG" ]; then
+  printf '%s\n' "$*" >> "$POSTAGENT_REQUEST_LOG"
+fi
+
+case "$*" in
+  *"/repos/owner/repo/stargazers?per_page=100&page=1"*)
+    printf '['
+    i=1
+    while [ "$i" -le 100 ]; do
+      if [ "$i" -gt 1 ]; then printf ','; fi
+      if [ "$i" -le 75 ]; then
+        starred_at='2026-04-01T12:00:00Z'
+      else
+        starred_at='2026-04-10T09:00:00Z'
+      fi
+      printf '{"starred_at":"%s","user":{"login":"u%s"}}' "$starred_at" "$i"
+      i=$((i + 1))
+    done
+    printf ']\n'
+    exit 0 ;;
+  *"/users/u"*)
+    login=$(printf '%s\n' "$*" | sed 's#.*https://api.github.com/users/\([^ ]*\).*#\1#')
+    n=$(printf '%s\n' "$login" | sed 's#[^0-9]##g')
+    month=$((n % 12 + 1))
+    day=$((n % 27 + 1))
+    printf '{"login":"%s","created_at":"2018-%02d-%02dT00:00:00Z","followers":8,"public_repos":6,"bio":"developer"}\n' "$login" "$month" "$day"
+    exit 0 ;;
+  *"/repos/owner/repo/traffic/"*)
+    printf '%s\n' '⚠ 403 — endpoint requires authorization at https://api.github.com/repos/owner/repo/traffic' >&2
+    printf '%s\n' 'HTTP 403 Forbidden' >&2
+    exit 0 ;;
+  *"/repos/owner/repo/contributors"*)
+    cat <<'JSON'
+[{"login":"owner"},{"login":"alice"},{"login":"bob"},{"login":"carol"},{"login":"dana"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/subscribers"*)
+    cat <<'JSON'
+[{"login":"watcher1"},{"login":"watcher2"}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stats/commit_activity"*)
+    cat <<'JSON'
+[{"week":1711843200,"total":12},{"week":1712448000,"total":9},{"week":1713052800,"total":7}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo/stats/contributors"*)
+    cat <<'JSON'
+[{"total":20,"author":{"login":"owner"}},{"total":5,"author":{"login":"alice"}}]
+JSON
+    exit 0 ;;
+  *"/repos/owner/repo"*)
+    cat <<'JSON'
+{"name":"repo","full_name":"owner/repo","owner":{"login":"owner"},"html_url":"https://github.com/owner/repo","stargazers_count":100,"forks_count":12,"open_issues_count":3}
+JSON
+    exit 0 ;;
+esac
+
+printf '%s\n' "unexpected request: $*" >&2
+exit 1
+"#
+    .to_string()
+}
+
 fn fake_github_postagent_uppercase_repo() -> String {
     r#"#!/bin/sh
 if [ -n "$POSTAGENT_REQUEST_LOG" ]; then
@@ -999,6 +1065,38 @@ fn github_audit_timeline_computes_burst_signals() {
 }
 
 #[test]
+fn github_audit_organic_launch_burst_keeps_high_trust_score() {
+    let env = Env::new();
+    let postagent = env.write_fake_bin("postagent", &fake_github_postagent_organic_launch_burst());
+
+    let (v, stdout, stderr, code) = env.research_with_postagent_env(
+        &[
+            "--json",
+            "github-audit",
+            "owner/repo",
+            "--depth",
+            "timeline",
+            "--sample",
+            "100",
+        ],
+        Some(&postagent),
+        &[],
+    );
+
+    assert_eq!(code, 0, "{v:#?}\nstdout={stdout}\nstderr={stderr}");
+    assert!(
+        v["data"]["signals"]["timeline"]["max_24h_star_share"]
+            .as_f64()
+            .unwrap()
+            >= 0.70
+    );
+    assert!(v["data"]["risk"]["score"].as_i64().unwrap() <= 10);
+    assert_eq!(v["data"]["risk"]["band"], "low");
+    assert!(v["data"]["trust"]["score"].as_i64().unwrap() >= 90);
+    assert_eq!(v["data"]["trust"]["band"], "high");
+}
+
+#[test]
 fn skill_recommends_github_audit_for_trust_reports() {
     let skill_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../skills/ascent-research/SKILL.md");
@@ -1067,17 +1165,21 @@ fn github_audit_html_report_renders_trust_scorecard() {
     let html = fs::read_to_string(html_path).unwrap();
     assert!(html.contains("GitHub Trust Audit"));
     assert!(html.contains("owner/repo"));
+    assert!(html.contains("Trust score"));
     assert!(html.contains("Risk score"));
     assert!(html.contains("Confidence"));
+    assert!(html.contains("Evidence status"));
+    assert!(html.contains("trust-score-value"));
     assert!(html.contains("risk-score-value"));
     assert!(html.contains("confidence-value"));
+    assert!(html.contains("trust.score"));
     assert!(html.contains("max_24h_star_share"));
     assert!(html.contains("max_daily_star_share"));
     assert!(html.contains("empty_bio_share"));
     assert!(html.contains("subscriber_star_ratio"));
     assert!(html.contains("<svg"));
     assert!(html.contains("Not a fake/real verdict"));
-    assert!(html.contains("unknown means evidence is incomplete"));
+    assert!(html.contains("partial evidence means some GitHub-native checks are incomplete"));
     assert!(!html.contains("Authorization"));
     assert!(!html.contains("GITHUB.TOKEN"));
 }
@@ -1217,7 +1319,9 @@ fn github_audit_treats_stats_202_and_traffic_429_as_unavailable() {
         v["data"]["signals"]["repo"]["commit_activity_source"],
         "stats_pending"
     );
-    assert_eq!(v["data"]["risk"]["band"], "unknown");
+    assert_ne!(v["data"]["risk"]["band"], "unknown");
+    assert_eq!(v["data"]["risk"]["evidence_status"], "partial");
+    assert_eq!(v["data"]["risk"]["confidence"], 0.35);
     assert!(
         v["data"]["risk"]["reasons"]
             .as_array()
@@ -1252,7 +1356,7 @@ fn github_audit_treats_stats_202_and_traffic_429_as_unavailable() {
 }
 
 #[test]
-fn github_audit_stats_unavailable_returns_unknown() {
+fn github_audit_stats_unavailable_returns_partial_evidence() {
     let env = Env::new();
     let postagent = env.write_fake_bin("postagent", &fake_github_postagent_stats_unavailable());
 
@@ -1266,7 +1370,9 @@ fn github_audit_stats_unavailable_returns_unknown() {
         v["data"]["signals"]["repo"]["commit_activity_source"],
         "unavailable"
     );
-    assert_eq!(v["data"]["risk"]["band"], "unknown");
+    assert_ne!(v["data"]["risk"]["band"], "unknown");
+    assert_eq!(v["data"]["risk"]["evidence_status"], "partial");
+    assert_eq!(v["data"]["risk"]["confidence"], 0.35);
     assert!(
         v["data"]["risk"]["reasons"]
             .as_array()
@@ -1299,7 +1405,7 @@ fn github_audit_stats_unavailable_returns_unknown() {
 }
 
 #[test]
-fn github_audit_contributor_stats_unavailable_returns_unknown() {
+fn github_audit_contributor_stats_unavailable_returns_partial_evidence() {
     let env = Env::new();
     let postagent = env.write_fake_bin(
         "postagent",
@@ -1320,7 +1426,9 @@ fn github_audit_contributor_stats_unavailable_returns_unknown() {
         v["data"]["signals"]["repo"]["stats_contributors_source"],
         "unavailable"
     );
-    assert_eq!(v["data"]["risk"]["band"], "unknown");
+    assert_ne!(v["data"]["risk"]["band"], "unknown");
+    assert_eq!(v["data"]["risk"]["evidence_status"], "partial");
+    assert_eq!(v["data"]["risk"]["confidence"], 0.35);
     assert!(
         v["data"]["risk"]["reasons"]
             .as_array()

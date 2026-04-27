@@ -223,8 +223,9 @@ ascent-research wiki query "what's my stance on code review for AI?" \
 ### D. Audit GitHub star-trust signals
 
 `github-audit` creates a deterministic evidence artifact first; the LLM only
-interprets that artifact and any follow-up public context. It reports risk
-score, band, confidence, reasons, and evidence, not a hard “fake/real” verdict.
+interprets that artifact and any follow-up public context. It reports a
+human-facing trust score, machine-facing risk score/band, confidence, reasons,
+and evidence, not a hard “fake/real” verdict.
 
 ```bash
 ascent-research github-audit dagster-io/dagster \
@@ -237,8 +238,9 @@ ascent-research finish dagster-trust --open
 ```
 
 Use `audit.html` when the user needs the trust decision surface directly:
-score, band, confidence, metric dashboard, reasons, and evidence gaps. Use the
-research session only for contextual follow-up around that deterministic score.
+trust score, risk score, confidence, metric dashboard, reasons, and evidence
+gaps. Use the research session only for contextual follow-up around that
+deterministic score.
 
 Full command reference, error-code triage, loop contracts, and scenario
 playbooks: see [`skills/ascent-research/SKILL.md`](skills/ascent-research/SKILL.md).

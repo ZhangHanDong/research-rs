@@ -128,8 +128,8 @@ ascent-research finish <owner>-<repo>-trust --open
 
 Rules:
 
-- `github-audit` outputs risk score, band, confidence, reasons, and evidence; never call a repo “fake” or “real” deterministically.
-- If the user asks whether a repo looks trustworthy, show `audit.html` first. It is the deterministic scorecard: score, band, confidence, metric dashboard, reasons, and evidence gaps.
+- `github-audit` outputs trust score, risk score, band, confidence, reasons, and evidence; never call a repo “fake” or “real” deterministically.
+- If the user asks whether a repo looks trustworthy, show `audit.html` first. It is the deterministic scorecard: trust score, risk score, confidence, metric dashboard, reasons, and evidence gaps.
 - Use `--depth repo` for anonymous quick checks; use `stargazers` or `timeline` only when postagent can resolve `$POSTAGENT.GITHUB.TOKEN`.
 - The audit JSON is the evidence artifact. Add it with `add-local` before `loop` so the report cites the deterministic signals instead of re-deriving them.
 - `--preset github-trust` is for contextual follow-up sources; it does not replace `github-audit` scoring.
@@ -219,7 +219,7 @@ ascent-research github-audit <owner>/<repo> [--depth repo|stargazers|timeline] [
 ascent-research github-audit https://github.com/<owner>/<repo> --depth timeline --sample 500 --out audit.json --html audit.html
 ```
 
-- Produces a deterministic trust evidence envelope: repo ratios, sampled stargazer profile signals, timeline burst signals, risk score/band/confidence/reasons/evidence.
+- Produces a deterministic trust evidence envelope: repo ratios, sampled stargazer profile signals, timeline burst signals, trust score, risk score/band/confidence/reasons/evidence.
 - Default depth is `stargazers`, default sample is 200. Use `repo` when GitHub token auth is unavailable.
 - `stargazers` and `timeline` use `postagent` with `Authorization: Bearer $POSTAGENT.GITHUB.TOKEN`; no raw token should appear in stdout/stderr/session files.
 - `--out` writes the full JSON envelope for `add-local` ingestion into a follow-up `--preset github-trust` report.
