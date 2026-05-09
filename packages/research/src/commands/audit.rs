@@ -102,6 +102,7 @@ pub fn run(slug_arg: Option<&str>) -> Envelope {
     let mut loop_completed = 0usize;
     let mut last_loop_reason: Option<String> = None;
     let mut last_loop_report_ready: Option<bool> = None;
+    let mut fallback_events: Vec<Value> = Vec::new();
 
     for ev in &events {
         match ev {
@@ -114,6 +115,53 @@ pub fn run(slug_arg: Option<&str>) -> Envelope {
                 digested_sources.insert(url.clone());
             }
             SessionEvent::SourceRejected { .. } => sources_rejected += 1,
+            SessionEvent::FallbackSelected {
+                from_hand,
+                to_hand,
+                reason,
+                note,
+                ..
+            } => {
+                fallback_events.push(json!({
+                    "kind": "fallback_selected",
+                    "from_hand": from_hand,
+                    "to_hand": to_hand,
+                    "reason": reason,
+                    "note": note,
+                }));
+            }
+            SessionEvent::OriginalUrlPreserved {
+                local_url,
+                original_url,
+                origin_tool,
+                origin_note,
+                ..
+            } => {
+                fallback_events.push(json!({
+                    "kind": "original_url_preserved",
+                    "local_url": local_url,
+                    "original_url": original_url,
+                    "origin_tool": origin_tool,
+                    "origin_note": origin_note,
+                }));
+            }
+            SessionEvent::FallbackSourceAccepted {
+                local_url,
+                original_url,
+                origin_tool,
+                bytes,
+                note,
+                ..
+            } => {
+                fallback_events.push(json!({
+                    "kind": "fallback_source_accepted",
+                    "local_url": local_url,
+                    "original_url": original_url,
+                    "origin_tool": origin_tool,
+                    "bytes": bytes,
+                    "note": note,
+                }));
+            }
             SessionEvent::ToolCallStarted {
                 call_id,
                 hand,
@@ -380,6 +428,9 @@ pub fn run(slug_arg: Option<&str>) -> Envelope {
                 "accepted": sources_accepted,
                 "rejected": sources_rejected,
             },
+            "fallback": {
+                "events": fallback_events,
+            },
             "tools": {
                 "started": tools_started,
                 "completed": tools_completed,
@@ -395,10 +446,10 @@ pub fn run(slug_arg: Option<&str>) -> Envelope {
                 "supported": fact_supported,
                 "refuted": fact_refuted,
                 "uncertain": fact_uncertain,
-            "invalid_sources": fact_invalid_sources,
-            "undigested_sources": fact_undigested_sources,
-            "items": fact_checks,
-        },
+                "invalid_sources": fact_invalid_sources,
+                "undigested_sources": fact_undigested_sources,
+                "items": fact_checks,
+            },
             "synthesis": {
                 "started": synth_started,
                 "completed": synth_completed,
@@ -464,6 +515,29 @@ fn summarize_event(ev: &SessionEvent) -> String {
             executor,
             ..
         } => format!("source rejected via {executor} reason={reason:?} url={url}"),
+        SessionEvent::FallbackSelected {
+            from_hand,
+            to_hand,
+            reason,
+            ..
+        } => format!("fallback selected {from_hand}->{to_hand} reason={reason}"),
+        SessionEvent::OriginalUrlPreserved {
+            local_url,
+            original_url,
+            origin_tool,
+            ..
+        } => format!(
+            "original url preserved origin_tool={origin_tool} original={original_url} local={local_url}"
+        ),
+        SessionEvent::FallbackSourceAccepted {
+            local_url,
+            original_url,
+            origin_tool,
+            bytes,
+            ..
+        } => format!(
+            "fallback source accepted origin_tool={origin_tool} bytes={bytes} original={original_url} local={local_url}"
+        ),
         SessionEvent::ToolCallStarted {
             call_id,
             hand,
