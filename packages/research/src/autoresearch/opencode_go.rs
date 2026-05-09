@@ -73,7 +73,7 @@ impl OpenCodeGoProvider {
                 {"role": "user", "content": user}
             ],
             "temperature": 0.7,
-            "max_tokens": 16384
+            "max_tokens": 32768
         });
 
         let resp = self.client
@@ -93,8 +93,12 @@ impl OpenCodeGoProvider {
         let json: Value = resp.json().await
             .map_err(|e| ProviderError::CallFailed(format!("parse: {e}")))?;
 
-        let text = json["choices"][0]["message"]["content"]
-            .as_str()
+        let msg = &json["choices"][0]["message"];
+        // Primary: `content`. Fallback: `reasoning_content` (DeepSeek models
+        // may put the response here when reasoning budget is consumed).
+        let text = msg["content"].as_str()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| msg["reasoning_content"].as_str())
             .ok_or_else(|| ProviderError::CallFailed(
                 format!("unexpected response shape: {}", json)
             ))?;
@@ -110,7 +114,7 @@ impl OpenCodeGoProvider {
             "model": self.model,
             "system": system,
             "messages": [{"role": "user", "content": user}],
-            "max_tokens": 16384
+            "max_tokens": 32768
         });
 
         let resp = self.client
