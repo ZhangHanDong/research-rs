@@ -241,7 +241,7 @@ pub enum Commands {
     Loop {
         slug: Option<String>,
         /// LLM provider: fake | claude | codex | opencode-go.
-        #[arg(long, default_value = "fake")]
+        #[arg(long, default_value = "opencode-go")]
         provider: String,
         #[arg(long)]
         iterations: Option<u32>,

