@@ -56,7 +56,8 @@ pub fn run(
     client.ensure_initialized()?;
 
     let goto_cmd = build_new_tab_cmd(url, &handle);
-    let runcode_cmd = build_runcode_cmd(&handle, timeout_ms, frame_id, run_code_args);
+    let runcode_cmd =
+        build_runcode_cmd_for_url(url, &handle, timeout_ms, frame_id, run_code_args);
     let close_cmd = build_close_cmd(&handle);
 
     // Step 1: new-tab.
@@ -262,6 +263,190 @@ await new Promise(r => setTimeout(r, 250)); \
 } \
 return { url: page.url(), title: await page.title(), text: document.body.innerText }; \
 }"
+}
+
+// ─── Per-host runcode flavor ──────────────────────────────────────────────
+//
+// Spec: `specs/x-com-tweet-runcode-flavor.spec.md`.
+//
+// Default runcode polls `body.innerText` after networkidle, which fails on
+// x.com tweet-detail pages: X hydrates the `<article>` via a separate
+// GraphQL `TweetDetail` request fired AFTER networkidle, and the left-nav
+// chrome alone already pushes `body.innerText.length > 100`, so the
+// hydration probe short-circuits to "done" before the tweet body lands.
+//
+// XTweet flavor swaps the hydration probe for an explicit
+// `waitForSelector(article[data-testid="tweet"] | …)` and reads
+// `article.innerText` (10× cleaner than full-page innerText). Dispatch is
+// by URL host only — path / query do not affect the choice because the
+// multi-selector covers tweet detail / profile / search-live / cellInnerDiv
+// uniformly.
+
+/// Which runcode JS variant to feed `browser run-code`.
+///
+/// Picked by `flavor_for_url`. Adding a new flavor (Reddit, LinkedIn) =
+/// one variant + one `match` arm in `runcode_inline_js_for` + one host
+/// entry in `flavor_for_url`. The TOML preset schema is unchanged —
+/// flavor is a pure V2-internal concern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuncodeFlavor {
+    /// `runcode_inline_js()` — works for static pages and most SPAs.
+    Default,
+    /// `runcode_inline_js_x_tweet()` — selector-driven wait for X /
+    /// Twitter tweet detail, profile, and search-live pages.
+    XTweet,
+}
+
+/// Map a URL to its runcode flavor.
+///
+/// Host-only sniff. Recognised hosts (case-insensitive via `ParsedUrl`'s
+/// lower-casing): `x.com`, `www.x.com`, `mobile.x.com`, `twitter.com`,
+/// `www.twitter.com`, `mobile.twitter.com` → `XTweet`. Everything else
+/// (including URLs `ParsedUrl::parse` rejects) → `Default`. Reuses the
+/// hand-rolled `ParsedUrl` from `route::rules` so no new dep is pulled in.
+pub fn flavor_for_url(url: &str) -> RuncodeFlavor {
+    let Some(parsed) = crate::route::rules::ParsedUrl::parse(url) else {
+        return RuncodeFlavor::Default;
+    };
+    match parsed.host.as_str() {
+        "x.com" | "www.x.com" | "mobile.x.com"
+        | "twitter.com" | "www.twitter.com" | "mobile.twitter.com" => RuncodeFlavor::XTweet,
+        _ => RuncodeFlavor::Default,
+    }
+}
+
+/// XTweet runcode JS — see flavor doc above.
+///
+/// Behavioural deltas vs `runcode_inline_js`:
+/// - **omits** `waitForLoadState("networkidle", …)` — X never idles
+///   (background polling + tracker pings), so the 3 s budget is wasted.
+/// - **omits** the 20×250ms body-text hydration poll — the nav chrome
+///   alone passes the `length > 100` threshold and short-circuits.
+/// - **adds** `waitForSelector('article[data-testid="tweet"], [data-testid="cellInnerDiv"], [data-testid="UserName"]', { timeout: 15000 })`
+///   — the multi-selector covers tweet detail / search timeline /
+///   profile uniformly; 15 s covers p95 hydration on residential
+///   connections.
+/// - **adds** a collect-across-scrolls strategy (`MAX_SCROLLS = 8`,
+///   `MAX_ARTICLES = 25`) — X uses a virtualized list so naive
+///   "scroll then querySelectorAll" loses the main tweet (mounted
+///   at top, unmounted after scroll). Instead the loop **snapshots
+///   the DOM before scrolling and again after each step**, keyed by
+///   the tweetId extracted from each article's `/USER/status/<id>`
+///   link. `Map<id, text>` dedupes across snapshots so virtualized
+///   articles survive in the result. Scroll step is 0.8 × viewport
+///   (not jump-to-bottom) to leave more articles mounted between
+///   reads. Worst-case scroll budget = 8 × 1.2 s = 9.6 s.
+/// - **adds** a 500 ms `setTimeout` grace after the scroll loop — the
+///   selector match means the element mounted, but text nodes may
+///   land on the next React frame.
+/// - **reads** all matching articles via `querySelectorAll`, joins
+///   their `innerText` with `'\n\n---\n\n'` (markdown thematic break,
+///   downstream md renderers naturally split it), falling back to
+///   `document.body.innerText` when the selector wait timed out
+///   (deleted tweet / login wall / X redesign) — preserves diagnostic
+///   text for smell-test triage instead of returning empty string.
+/// - **extracts media** per-article — `<img>` URLs filtered to the
+///   `pbs.twimg.com/{media,tweet_video_thumb,card_img}` whitelist
+///   (avatars and twemoji excluded as noise), plus `<video>.poster`
+///   first-frame URLs. Each URL is appended after the article's
+///   innerText as markdown `![](url)`. The rich-html report renders
+///   them as `<img>`; raw `.md` files preview them in Obsidian / VS
+///   Code. No image bytes downloaded — URLs only, browser fetches
+///   from X's public CDN on render.
+///
+/// Total worst-case time: 8 + 15 + 7.2 + 0.5 ≈ 30.7 s. The caller's
+/// inner timeout (caller_timeout_ms − 5 s slack, clamped to
+/// [5 s, 115 s]) defaults to 85 s, leaving ~54 s headroom for slow
+/// SPAs (profile and search-live are heavier than tweet-detail).
+pub fn runcode_inline_js_x_tweet() -> &'static str {
+    // Collect-across-scrolls strategy:
+    //   X uses a virtualized list — articles that scroll out of viewport
+    //   get unmounted from the DOM. The naive "scroll then querySelectorAll"
+    //   loses the main tweet (which is at the top before scrolling, then
+    //   unmounted by the time we read).
+    //
+    //   Fix: snapshot BEFORE scrolling, then again after each scroll step,
+    //   keyed by tweetId (extracted from /USER/status/<id> link inside each
+    //   article). Map<id, text> dedupes across snapshots so virtualized
+    //   articles survive in the result.
+    //
+    //   Scroll in 0.8 × viewport increments (not jump-to-bottom) to give
+    //   incremental hydration a chance and keep more articles mounted at
+    //   any one moment.
+    "async (page) => { \
+try { await page.waitForLoadState(\"domcontentloaded\", { timeout: 8000 }); } catch (_e) {} \
+try { await page.waitForSelector('article[data-testid=\"tweet\"], [data-testid=\"cellInnerDiv\"], [data-testid=\"UserName\"]', { timeout: 15000 }); } catch (_e) {} \
+const MAX_SCROLLS = 8; \
+const MAX_ARTICLES = 25; \
+const seen = new Map(); \
+const snapshot = () => { \
+document.querySelectorAll('article[data-testid=\"tweet\"]').forEach(a => { \
+const link = a.querySelector('a[href*=\"/status/\"]'); \
+const m = link ? link.getAttribute('href').match(/\\/status\\/(\\d+)/) : null; \
+const id = m ? m[1] : ('idx-' + seen.size); \
+if (seen.has(id)) return; \
+const txt = a.innerText; \
+const imgs = Array.from(a.querySelectorAll('img')).map(i => i.src).filter(s => s.includes('pbs.twimg.com/media') || s.includes('pbs.twimg.com/tweet_video_thumb') || s.includes('pbs.twimg.com/card_img')); \
+const vids = Array.from(a.querySelectorAll('video')).map(v => v.poster || v.src).filter(Boolean); \
+const media = imgs.concat(vids).map(u => '![](' + u + ')').join('\\n'); \
+seen.set(id, media ? (txt + '\\n\\n' + media) : txt); \
+}); \
+}; \
+snapshot(); \
+for (let s = 0; s < MAX_SCROLLS; s++) { \
+if (seen.size >= MAX_ARTICLES) break; \
+const before = seen.size; \
+window.scrollBy(0, window.innerHeight * 0.8); \
+await new Promise(r => setTimeout(r, 1200)); \
+snapshot(); \
+if (seen.size === before) break; \
+} \
+await new Promise(r => setTimeout(r, 500)); \
+snapshot(); \
+const ordered = Array.from(seen.values()).slice(0, MAX_ARTICLES); \
+const text = ordered.length > 0 ? ordered.join('\\n\\n---\\n\\n') : document.body.innerText; \
+return { url: page.url(), title: await page.title(), text }; \
+}"
+}
+
+/// Return the inline JS for a given flavor.
+pub fn runcode_inline_js_for(flavor: RuncodeFlavor) -> &'static str {
+    match flavor {
+        RuncodeFlavor::Default => runcode_inline_js(),
+        RuncodeFlavor::XTweet => runcode_inline_js_x_tweet(),
+    }
+}
+
+/// URL-aware variant of `build_runcode_cmd` — picks the inline JS by
+/// `flavor_for_url(url)` then assembles the same `browser run-code …`
+/// shell-escaped cmd string as `build_runcode_cmd`. The Default-flavor
+/// `build_runcode_cmd` is preserved as a convenience entrypoint (and to
+/// keep v0.4.0's `runcode_flags.rs` tests zero-modification compatible).
+pub fn build_runcode_cmd_for_url(
+    url: &str,
+    handle: &str,
+    caller_timeout_ms: u64,
+    frame_id: Option<u32>,
+    run_code_args: Option<&Value>,
+) -> String {
+    let flavor = flavor_for_url(url);
+    let inner_timeout_ms = caller_timeout_ms
+        .saturating_sub(5_000)
+        .min(115_000)
+        .max(5_000);
+    let mut cmd = format!("browser run-code --tab {handle} --timeout {inner_timeout_ms}");
+    if let Some(fid) = frame_id {
+        cmd.push_str(&format!(" --frame-id {fid}"));
+    }
+    if let Some(args) = run_code_args {
+        let literal = serde_json::to_string(args).unwrap_or_else(|_| "[]".to_string());
+        cmd.push_str(&format!(" --args '{literal}'"));
+    }
+    cmd.push_str(&format!(
+        " '{}'",
+        runcode_inline_js_for(flavor).replace('\'', "\\'")
+    ));
+    cmd
 }
 
 // ---------------------------------------------------------------------------
