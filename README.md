@@ -85,6 +85,29 @@ Claude Code / Codex instance, or vice versa.
 
 ---
 
+## What's new in 0.4.2
+
+- **Third LLM provider: OpenCode Go** ($10/mo subscription, OpenAI-
+  and Anthropic-compatible HTTP endpoints to DeepSeek / Kimi / GLM /
+  Qwen / MiniMax). Build with `--features provider-opencode-go`, set
+  `OPENCODE_API_KEY` + `ASR_OPENCODE_MODEL`, then
+  `ascent-research loop <slug> --provider opencode-go`.
+- Useful when Claude Code Pro / ChatGPT Plus subscriptions are out of
+  reach (cost or payment-region constraints). All knobs are env-driven
+  (`ASR_OPENCODE_PROTOCOL`, `ASR_OPENCODE_TEMPERATURE`,
+  `ASR_OPENCODE_MAX_TOKENS`, `ASR_OPENCODE_TIMEOUT_MS`).
+- Also works as `ASR_BILINGUAL_PROVIDER=opencode-go` for
+  `synthesize --bilingual` Chinese translation.
+- **CLI defaults unchanged** — `--provider` still defaults to `fake`;
+  opt in to `opencode-go` explicitly.
+- Thanks to [@Paul-Yuchao-Dong](https://github.com/Paul-Yuchao-Dong)
+  for raising the use case and contributing the initial design (PR #19).
+
+See `CHANGELOG.md` for the full design rationale incl. what was
+deliberately not adopted from the PR.
+
+---
+
 ## What's new in 0.4.1
 
 - **x.com / twitter.com tweet capture works end-to-end** through the V2

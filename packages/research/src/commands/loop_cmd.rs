@@ -8,6 +8,8 @@ use serde_json::json;
 use crate::autoresearch::claude::ClaudeProvider;
 #[cfg(feature = "provider-codex")]
 use crate::autoresearch::codex::CodexProvider;
+#[cfg(feature = "provider-opencode-go")]
+use crate::autoresearch::opencode_go::OpenCodeGoProvider;
 use crate::autoresearch::executor::{self, LoopConfig};
 use crate::autoresearch::provider::{AgentProvider, FakeProvider};
 use crate::output::Envelope;
@@ -77,11 +79,30 @@ pub fn run(
             )
             .with_context(json!({ "session": slug }));
         }
+        #[cfg(feature = "provider-opencode-go")]
+        "opencode-go" => match OpenCodeGoProvider::from_env() {
+            Ok(p) => Box::new(p),
+            Err(e) => {
+                return Envelope::fail(CMD, "PROVIDER_NOT_AVAILABLE", e.to_string())
+                    .with_context(json!({ "session": slug }));
+            }
+        },
+        #[cfg(not(feature = "provider-opencode-go"))]
+        "opencode-go" => {
+            return Envelope::fail(
+                CMD,
+                "PROVIDER_NOT_AVAILABLE",
+                "provider 'opencode-go' requires the `provider-opencode-go` feature (build with `--features provider-opencode-go`)",
+            )
+            .with_context(json!({ "session": slug }));
+        }
         other => {
             return Envelope::fail(
                 CMD,
                 "PROVIDER_NOT_AVAILABLE",
-                format!("unknown provider '{other}'; expected one of: fake, claude, codex"),
+                format!(
+                    "unknown provider '{other}'; expected one of: fake, claude, codex, opencode-go"
+                ),
             )
             .with_context(json!({ "session": slug }));
         }

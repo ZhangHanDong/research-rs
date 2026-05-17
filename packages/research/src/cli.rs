@@ -288,7 +288,7 @@ pub enum Commands {
     #[cfg(feature = "autoresearch")]
     Loop {
         slug: Option<String>,
-        /// LLM provider: fake | claude | codex.
+        /// LLM provider: fake | claude | codex | opencode-go.
         #[arg(long, default_value = "fake")]
         provider: String,
         #[arg(long)]
@@ -366,7 +366,7 @@ pub enum WikiCmd {
         /// Answer shape: prose (default) | comparison | table.
         #[arg(long)]
         format: Option<String>,
-        /// LLM provider: fake | claude | codex.
+        /// LLM provider: fake | claude | codex | opencode-go.
         #[arg(long, default_value = "claude")]
         provider: String,
     },

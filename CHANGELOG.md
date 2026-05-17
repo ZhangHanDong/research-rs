@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.4.2 — OpenCode Go provider
+
+Patch release: third LLM provider option. `provider-opencode-go` Cargo
+feature adds support for the [OpenCode Go](https://opencode.ai/zen/go)
+subscription ($10/month), which aggregates DeepSeek / Kimi / GLM / Qwen
+/ MiniMax behind standard OpenAI-compatible and Anthropic-compatible HTTP
+endpoints. Useful for users priced out of Claude Code Pro or ChatGPT
+Plus, or operating in regions where their payment methods aren't
+accepted.
+
+Initial idea + `reasoning_content` fallback insight + Windows packaging
+notes came from community PR #19 by [@Paul-Yuchao-Dong](https://github.com/Paul-Yuchao-Dong).
+This release adopts those substantive contributions but **not** the PR's
+default-changes (CLI `--provider` default stays `fake`; no hardcoded
+default model — every user must set `ASR_OPENCODE_MODEL` explicitly
+from the current OpenCode Go catalog).
+
+Built spec-first (`specs/provider-opencode-go.spec.md`, lint 100%, 19 BDD
+scenarios including an in-process HTTP mock).
+
+### Added
+
+- **`provider-opencode-go` Cargo feature** — pulls `reqwest 0.12` with
+  `rustls-tls` + `json` only (no `native-tls`, no `cookies`; portable to
+  Windows / Alpine / minimal images, no OpenSSL system dep).
+- **`OpenCodeGoProvider`** at
+  `packages/research/src/autoresearch/opencode_go.rs`:
+  - **Two protocols, explicit selection**:
+    `ASR_OPENCODE_PROTOCOL=openai` (default) hits
+    `/v1/chat/completions`; `=anthropic` hits `/v1/messages`. **Not
+    auto-detected from the model name** — vendors rotate namespaces too
+    fast for that to be reliable.
+  - **No default model**: `ASR_OPENCODE_MODEL` is required. Forces the
+    user to consult [opencode.ai/zen/go](https://opencode.ai/zen/go) for
+    the current catalog instead of relying on a hardcoded id that may
+    not exist.
+  - **HTTP timeout** mandatory (`ASR_OPENCODE_TIMEOUT_MS`, default 120 s,
+    clamped to `[5 s, 600 s]`). reqwest's default of unlimited would
+    hang on network blips.
+  - **Retry on 429 / 503** with exponential backoff (1 s → 2 s → 4 s,
+    max 3 retries). 4xx-other-than-429 and 5xx-other-than-503 are
+    treated as permanent and fail fast.
+  - **Network blip retry**: connect / timeout errors get exactly one
+    retry (no exponential — one-shot recovery).
+  - **`reasoning_content` fallback** for OpenAI-protocol responses where
+    DeepSeek-V3+ models put the final answer in `reasoning_content`
+    when the reasoning-token budget is exhausted (caught by @Paul-Yuchao-Dong).
+  - **Configurable `temperature`** (default 0.2 — research/reasoning
+    prefers low) and **`max_tokens`** (default 16384, hard cap 65536).
+- **`opencode-go` is a valid `--provider` value** in `ascent-research
+  loop` (alongside `fake` / `claude` / `codex`).
+- **`opencode-go` is a valid `ASR_BILINGUAL_PROVIDER` value** for
+  `synthesize --bilingual` translation.
+
+### Deliberately NOT adopted from PR #19
+
+To keep this a safe additive release:
+
+- **CLI `--provider` default unchanged** — stays `fake`. PR #19 changed
+  it to `opencode-go`, which would break test workflows and break loops
+  for any user without `OPENCODE_API_KEY` set.
+- **No hardcoded `DEFAULT_MODEL`** — PR #19 used `deepseek-v4-pro`. We
+  could not verify that model id exists in the OpenCode Go catalog, so
+  shipping it as default risks `HTTP 404: model not found` on every
+  first run. Forcing explicit `ASR_OPENCODE_MODEL` avoids the trap.
+- **No `is_anthropic(model)` prefix heuristic** — PR #19 routed
+  `starts_with("minimax")` to the Anthropic endpoint, which would
+  misroute any future `claude-*` or new-namespace model. Replaced with
+  an explicit `ASR_OPENCODE_PROTOCOL` env var (user copies it once
+  from the OpenCode Go docs per chosen model).
+- **No hardcoded `temperature: 0.7` / `max_tokens: 32768`** — both are
+  now env-driven with conservative defaults (0.2 / 16384).
+
+### Tests
+
+- 645 passing / 0 failed (with `--features provider-opencode-go`).
+  19 new integration tests in `tests/opencode_go.rs` covering env
+  parsing, retry semantics on every HTTP status (200 / 401 / 429 / 500
+  / 503), `reasoning_content` fallback, Anthropic content-array
+  joining, and a regression guard pinning the `--provider` default to
+  `fake`.
+- Mock HTTP server is an in-process `TcpListener` (mirrors the
+  `McpMock` pattern in `tests/composite_fetch.rs`); no `wiremock`
+  dev-dep was added.
+
+### Breaking
+
+None. New feature is gated; default `cargo install ascent-research` is
+unchanged (no new transitive deps, no behavior change). Bilingual
+translation and the loop command gain `opencode-go` as an additional
+valid value without affecting existing `claude` / `codex` paths.
+
+### Acknowledgement
+
+Thanks to [@Paul-Yuchao-Dong](https://github.com/Paul-Yuchao-Dong) for
+the real-world testing data (8 K → 32 K max_tokens bump rationale,
+DeepSeek `reasoning_content` behaviour) and for raising the cost /
+Windows / non-US-payment user-experience gaps that this release
+addresses. PR #19 is closed with explanation; this commit credits
+the author via `Co-Authored-By`.
+
 ## 0.4.1 — x.com tweet/thread/media capture
 
 Patch release: complete x.com (and twitter.com mirror) tweet capture

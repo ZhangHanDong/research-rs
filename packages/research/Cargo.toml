@@ -1,6 +1,6 @@
 [package]
 name = "ascent-research"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 description = "ascent-research — an incremental research workflow CLI for AI agents. Every session resumes; knowledge accretes across runs. Mixes HTTP, browser, and local file ingest into a durable per-session wiki + figure-rich HTML report."
 license = "MIT"
@@ -55,6 +55,12 @@ async-trait = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["rt", "macros", "process", "io-util", "time"], optional = true }
 cc-sdk = { version = "0.8", optional = true }
 
+# `provider-opencode-go` — async HTTP client for the OpenCode Go subscription
+# API. `default-features = false` + only `json` + `rustls-tls` keeps the
+# dependency tree small and Windows / Alpine / minimal-image friendly
+# (no OpenSSL system dep).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+
 [features]
 # `cargo install ascent-research` ships with the autonomous loop built in
 # — every playbook in the skill assumes `ascent-research loop` exists.
@@ -67,6 +73,10 @@ autoresearch = ["dep:async-trait", "dep:tokio"]
 # Provider implementations. Each implies `autoresearch`.
 provider-claude = ["autoresearch", "dep:cc-sdk"]
 provider-codex  = ["autoresearch"]
+# OpenCode Go ($10/mo subscription, aggregates DeepSeek / Kimi / GLM /
+# Qwen / MiniMax via OpenAI- and Anthropic-compatible HTTP). Needs only
+# `OPENCODE_API_KEY` + `ASR_OPENCODE_MODEL`. No SDK, no daemon.
+provider-opencode-go = ["autoresearch", "dep:reqwest"]
 
 [dev-dependencies]
 tempfile = "3"

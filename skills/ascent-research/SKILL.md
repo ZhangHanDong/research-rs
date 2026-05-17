@@ -17,6 +17,8 @@ Three binaries must be on PATH: `ascent-research` (the CLI itself), `postagent` 
 # 1. The ascent-research CLI (Rust). `autoresearch` is a default feature
 #    so `loop` works out of the box; add LLM providers for loop/wiki/bilingual.
 cargo install ascent-research --features "provider-claude provider-codex"
+# or, including the third-party OpenCode Go subscription provider (v0.4.2+):
+# cargo install ascent-research --features "provider-claude provider-codex provider-opencode-go"
 
 # 2. Node.js dependency tools
 npm install -g postagent @actionbookdev/cli
@@ -414,6 +416,7 @@ ascent-research loop [<slug>] --provider {fake|claude|codex} [--iterations N]
 - `fake` provider replays scripted JSON turns; used by tests and manual debug runs.
 - `claude` provider uses `cc-sdk` (requires `--features provider-claude` at build time).
 - `codex` provider spawns `codex app-server` (requires `--features provider-codex`).
+- `opencode-go` provider (new in v0.4.2) hits the [OpenCode Go](https://opencode.ai/zen/go) $10/mo subscription via OpenAI- or Anthropic-compatible HTTP (requires `--features provider-opencode-go`). Required env: `OPENCODE_API_KEY`, `ASR_OPENCODE_MODEL` (pick from the OpenCode Go catalog; no default). Optional: `ASR_OPENCODE_PROTOCOL` (`openai` default | `anthropic`), `ASR_OPENCODE_TEMPERATURE` (default 0.2), `ASR_OPENCODE_MAX_TOKENS` (default 16384), `ASR_OPENCODE_TIMEOUT_MS` (default 120000, clamped [5000, 600000]). Useful when Claude/ChatGPT subscriptions are out of reach (cost / region / payment).
 - Loop reads `SCHEMA.md` each turn; user edits via `schema edit` take effect on the next iteration.
 - Action types the loop accepts: `write_plan`, `write_overview`, `write_aside`, `write_section`, `write_diagram`, `note_diagram_needed`, `digest_source`, `fact_check`, `add`, `batch`, `write_wiki_page`, `append_wiki_page`, `actionbook_search`, `actionbook_manual`, `actionbook_run_code`.
 - New in v0.4.0 — the three `actionbook_*` actions are dispatch arms for the V2 MCP backend. Per-iteration caps: `actionbook_search` ≤ 5, `actionbook_manual` ≤ 5, `actionbook_run_code` ≤ 3. Long outputs get a `[…truncated to <N>KB…]` marker. Each emits an `ActionbookCalled` jsonl event.
